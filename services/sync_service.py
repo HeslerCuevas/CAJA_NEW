@@ -74,7 +74,6 @@ class SyncService:
             if response.status_code == 200:
                 data = response.json()
                 
-                # Handle wrapped responses like {"empleados": [...]} or {"data": [...]}
                 if isinstance(data, dict):
                     data = data.get("empleados") or data.get("data") or data.get("results") or []
                 
@@ -86,7 +85,7 @@ class SyncService:
                 saved = 0
                 try:
                     for emp in data:
-                        # Flexible ID mapping
+ 
                         emp_id = emp.get("id_usuario") or emp.get("id_empleado") or emp.get("id") or emp.get("ID_Usuario")
                         if not emp_id:
                             print(f"⚠️ Skipping employee with no ID: {emp}", flush=True)
@@ -97,7 +96,7 @@ class SyncService:
                             user = UsuarioLocal(id_usuario=int(emp_id))
                             db.add(user)
                         
-                        # Flexible field mapping (API returns: id, nombre_completo, gmail)
+
                         user.nombre = emp.get("nombre_completo") or emp.get("nombre") or emp.get("Nombre") or emp.get("name") or user.nombre
                         user.hash_clave = emp.get("hash_clave") or emp.get("Hash_Clave") or emp.get("clave") or emp.get("password") or user.hash_clave
                         user.id_sucursal = emp.get("id_sucursal") or emp.get("ID_Sucursal") or emp.get("sucursal") or user.id_sucursal or 1
@@ -193,8 +192,7 @@ class SyncService:
             response = requests.get(url, headers=headers, timeout=15)
             if response.status_code == 200:
                 data = response.json()
-                
-                # Handle wrapped responses
+
                 if isinstance(data, dict):
                     data = data.get("productos") or data.get("data") or data.get("results") or []
                 
@@ -217,8 +215,7 @@ class SyncService:
                             p = ProductoLocal(id_producto=int(prod_id))
                             db.add(p)
                             is_new = True
-                        
-                        # Flexible field mapping — safe to update prices/names always
+
                         p.nombre = prod.get("nombre") or prod.get("Nombre") or prod.get("nombre_producto") or p.nombre or "Sin Nombre"
                         
                         precio_val = prod.get("precio_actual") or prod.get("precio") or prod.get("Precio") or prod.get("Precio_Venta") or prod.get("precio_base")
@@ -226,11 +223,7 @@ class SyncService:
                         
                         tasa_val = prod.get("tasa_impuesto") or prod.get("impuesto")
                         p.tasa_impuesto = float(tasa_val) if tasa_val is not None else (p.tasa_impuesto or 0.18)
-                        
-                        # CRITICAL: Only set stock from API for brand-new products.
-                        # For existing products, NEVER overwrite stock_local from the API.
-                        # Local deductions (from sales) are authoritative until the backend
-                        # confirms the sale and updates its own stock count.
+
                         if is_new:
                             stock_val = prod.get("stock_local") or prod.get("stock") or prod.get("cantidad") or prod.get("cantidad_disponible")
                             p.stock_local = int(stock_val) if stock_val is not None else 0
@@ -275,12 +268,9 @@ class SyncService:
             print(f"❌ Local sale sync connection error: {e}", flush=True)
             return False, f"Connection error: {str(e)}"
 
-    # --- RF-11: Remote Order Management ---
 
     def obtener_cuentas_abiertas(self):
-        """Fetch all pending/open orders from the CORE Gateway.
-        Returns a list of order dicts or an empty list on failure.
-        """
+
         url = f"{self.api_base_url}/api/v1/pedidos/pendientes"
         headers = {"Accept": "application/json"}
         if self.token:
@@ -289,18 +279,17 @@ class SyncService:
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                # Handle wrapped response
+
                 if isinstance(data, dict):
                     data = data.get("pedidos") or data.get("data") or data.get("results") or []
                 
-                # Filter orders to only include 'POR_FACTURAR' as requested by USER
                 filtered_data = [p for p in data if (p.get("estado") or p.get("Estado")) == "POR_FACTURAR"]
                 
                 SyncService._log("INFO", "SyncService.obtener_cuentas_abiertas", 
                                  f"Fetched {len(data)} total open orders, returning {len(filtered_data)} POR_FACTURAR.")
                 return filtered_data
             if response.status_code == 401:
-                return []  # Silent skip — not authenticated yet
+                return []
             SyncService._log("WARNING", "SyncService.obtener_cuentas_abiertas", f"HTTP {response.status_code}")
             return []
         except Exception as e:
@@ -308,10 +297,6 @@ class SyncService:
             return []
 
     def obtener_detalle_pedido(self, factura_uuid):
-        """Fetch full detail (line items) for a single remote order.
-        Returns a list of item dicts, e.g.:
-          [{"id_producto": 5, "cantidad": 2, "precio_unitario": 150.00, "nombre": "..."}, ...]
-        """
         url = f"{self.api_base_url}/api/v1/pedidos/{factura_uuid}"
         headers = {"Accept": "application/json"}
         if self.token:
@@ -324,7 +309,7 @@ class SyncService:
                 data = response.json()
                 print(f"📡 Order detail raw keys: {list(data.keys()) if isinstance(data, dict) else 'list'}", flush=True)
                 print(f"📡 Order detail raw data: {data}", flush=True)
-                # Items may be at root list or nested
+
                 if isinstance(data, list):
                     print(f"✅ Order detail: {len(data)} items (root list)", flush=True)
                     return data
@@ -343,17 +328,14 @@ class SyncService:
             return []
 
     def notificar_facturacion_remota(self, factura_uuid):
-        """Notify CORE that a remote order has been billed.
-        POST /api/v1/pedidos/{uuid}/facturar
-        Returns (success: bool, message: str)
-        """
+
         url = f"{self.api_base_url}/api/v1/pedidos/{factura_uuid}/facturar"
         headers = {"Accept": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
             print(f"📡 Sending payment confirmation to CORE: POST {url}", flush=True)
-            # Some backends expect an empty body to parse correctly as a POST, or a specific content length
+
             response = requests.post(url, headers=headers, json={}, timeout=10)
             print(f"📡 Payment confirmation response: HTTP {response.status_code}", flush=True)
             
@@ -371,4 +353,4 @@ class SyncService:
             print(f"❌ Payment confirmation connection error: {e}", flush=True)
             SyncService._log("ERROR", "SyncService.notificar_facturacion_remota",
                              f"Connection error notifying CORE for {factura_uuid}", e)
-            return False, f"Connection error: {str(e)}"
+            return False, f"Connection error: {str(e)}"

@@ -167,7 +167,7 @@ class POSService:
                     warnings.append(f"Product ID {id_prod} not found in local cache — skipped.")
                     continue
 
-                if prod.stock_local < cantidad:
+                if prod.stock_local < cantidad and prod.stock_local != 9999:
                     warnings.append(
                         f"'{prod.nombre}': requested {cantidad} but only {prod.stock_local} in stock."
                     )
@@ -243,9 +243,9 @@ class POSService:
                     )
                     db.add(det)
 
-                    # Deduct local stock directly for local sales
+                    # Deduct local stock — 9999 = unlimited stock marker, never decrement
                     prod = db.query(ProductoLocal).filter_by(id_producto=i['id']).first()
-                    if prod and prod.stock_local is not None:
+                    if prod and prod.stock_local is not None and prod.stock_local != 9999:
                         prod.stock_local = max(0, prod.stock_local - i['cant'])
 
                 # Construct payload for remote sync
@@ -319,10 +319,46 @@ class POSService:
                     cant = int(item.get("cantidad") or item.get("cant") or item.get("qty") or 0)
                     if pid and cant > 0:
                         prod = db.query(ProductoLocal).filter_by(id_producto=int(pid)).first()
-                        if prod and prod.stock_local is not None:
+                        # 9999 = unlimited stock marker — never decrement
+                        if prod and prod.stock_local is not None and prod.stock_local != 9999:
                             prod.stock_local = max(0, prod.stock_local - cant)
         except Exception as e:
             POSService.log_system_event("WARNING", "POSService.descontar_stock_remoto", "Failed to deduct remote stock locally", e)
+
+    def generar_ticket_desde_pedido(self, pedido, carrito_raw, ncf_tipo="CONSUMER", ncf_num="B0200000001", notas="", cliente=""):
+        """Generate a PDF ticket for a remote order paid directly from the Active Tables dialog.
+        pedido: the raw dict from obtener_cuentas_abiertas.
+        carrito_raw: list of cart item dicts with keys 'nombre', 'cant', 'precio'.
+        """
+        import types
+        # Some remote systems don't explicitly send propina_legal or propina_extra, so we calculate/safely get it
+        subt_val = pedido.get("subtotal", 0)
+        prop_legal_val = pedido.get("propina_legal")
+        if not prop_legal_val:
+            prop_legal_val = float(subt_val) * 0.10
+
+        # Build a lightweight factura-like namespace so generar_ticket_pdf can be reused as-is
+        factura = types.SimpleNamespace(
+            id_factura=pedido.get("factura_local_uuid", "REMOTE"),
+            fecha_hora=None,  # will fall back to datetime.now() inside generar_ticket_pdf
+            subtotal=subt_val,
+            total_impuestos=pedido.get("total_impuestos", 0),
+            propina_legal=prop_legal_val,
+            propina_extra=pedido.get("propina_extra", 0),
+            total_general=pedido.get("total_general", 0),
+            metodo_pago="TARJETA",
+        )
+        # Cash equals total (card payment — no change)
+        efec = factura.total_general
+        # Normalise carrito keys so generar_ticket_pdf can read 'precio', 'cant', 'nombre'
+        carrito = []
+        for item in carrito_raw:
+            carrito.append({
+                'nombre': item.get('nombre') or item.get('name') or 'Product',
+                'cant':   item.get('cant') or item.get('cantidad') or item.get('qty') or 1,
+                'precio': item.get('precio') or item.get('precio_unitario') or item.get('price') or 0,
+            })
+        self.generar_ticket_pdf(factura, carrito, efec, ncf_tipo, ncf_num, notas, cliente)
 
     def generar_ticket_pdf(self, factura, carrito, efec, ncf_tipo, ncf_num, notas, cliente):
         try:
@@ -395,7 +431,15 @@ class POSService:
             y -= 4*mm
             c.drawString(5*mm, y, "LEGAL TIP (10%):")
             c.drawRightString(75*mm, y, f"$ {float(factura.propina_legal):.2f}")
-            y -= 6*mm
+            y -= 4*mm
+            
+            prop_extra = getattr(factura, 'propina_extra', 0)
+            if prop_extra and float(prop_extra) > 0:
+                c.drawString(5*mm, y, "EXTRA TIP:")
+                c.drawRightString(75*mm, y, f"$ {float(prop_extra):.2f}")
+                y -= 4*mm
+                
+            y -= 2*mm
             c.setFont("Helvetica-Bold", 10)
             c.drawString(5*mm, y, "TOTAL:")
             c.drawRightString(75*mm, y, f"$ {float(factura.total_general):.2f}")

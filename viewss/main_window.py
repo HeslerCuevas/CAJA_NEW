@@ -131,10 +131,10 @@ class SyncWorker(QObject):
 
 class VerifoneDialog(QDialog):
     """Mock Verifone processing dialog for remote orders."""
-    def __init__(self, amount, subtotal_str=None, itbis_str=None, legaltip_str=None, parent=None):
+    def __init__(self, amount, subtotal_str=None, itbis_str=None, legaltip_str=None, extratip_str=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Verifone Payment")
-        self.setFixedSize(400, 320)
+        self.setFixedSize(400, 450)
         self.setStyleSheet("""
             QDialog { background-color: #0b1120; }
             QLabel { color: #f8fafc; font-size: 16px; font-weight: bold; }
@@ -164,6 +164,12 @@ class VerifoneDialog(QDialog):
             lbl_tip.setAlignment(Qt.AlignCenter)
             lbl_tip.setStyleSheet("color: #94a3b8; font-size: 16px;")
             layout.addWidget(lbl_tip)
+
+
+        lbl_extra = QLabel(f"EXTRA TIP: {extratip_str if extratip_str else '$ 0.00'}")
+        lbl_extra.setAlignment(Qt.AlignCenter)
+        lbl_extra.setStyleSheet("color: #94a3b8; font-size: 16px;")
+        layout.addWidget(lbl_extra)
         
         lbl_amount = QLabel(f"TOTAL DUE: {amount}")
         lbl_amount.setAlignment(Qt.AlignCenter)
@@ -176,7 +182,7 @@ class VerifoneDialog(QDialog):
         layout.addWidget(self.lbl_status)
         layout.addStretch()
         
-        # Safe class-bound timer to prevent garbage collection crashes
+
         self.timer_process = QTimer(self)
         self.timer_process.setSingleShot(True)
         self.timer_process.timeout.connect(self._on_success)
@@ -187,16 +193,22 @@ class VerifoneDialog(QDialog):
             self.lbl_status.setStyleSheet("color: #10b981; font-size: 20px;")
             self.lbl_status.setText("Payment Approved!")
         except RuntimeError: 
-            return # Dialog was closed early
+            return
 
         self.timer_close = QTimer(self)
         self.timer_close.setSingleShot(True)
         self.timer_close.timeout.connect(self.accept)
         self.timer_close.start(1500)
 
+    def closeEvent(self, event):
+        if hasattr(self, 'timer_process') and self.timer_process.isActive():
+            self.timer_process.stop()
+        if hasattr(self, 'timer_close') and self.timer_close.isActive():
+            self.timer_close.stop()
+        super().closeEvent(event)
+
 
 class _FetchOrdersWorker(QObject):
-    """Persistent worker for fetching pending orders without blocking UI."""
     finished = Signal(list)
     request = Signal()
 
@@ -219,8 +231,7 @@ class _FetchOrdersWorker(QObject):
 
 
 class MesasDialog(QDialog):
-    """Dialog showing all active/pending remote orders."""
-    order_selected = Signal(dict)  # Emits the selected order header
+    order_selected = Signal(dict)
 
     def __init__(self, sincronizador, pos_service, parent=None):
         super().__init__(parent)
@@ -228,7 +239,6 @@ class MesasDialog(QDialog):
         self.pos = pos_service
         self._pedidos = []
 
-        # Persistent refresh thread — lives for the dialog's lifetime
         self._refresh_thread = QThread(self)
         self._refresh_worker = _FetchOrdersWorker(self.sincronizador)
         self._refresh_worker.moveToThread(self._refresh_thread)
@@ -249,7 +259,7 @@ class MesasDialog(QDialog):
         """)
         layout = QVBoxLayout(self)
 
-        title = QLabel("🍽️  Active Tables — Double-click to import order")
+        title = QLabel("   Active Tables — Double-click to import order")
         title.setStyleSheet("font-size: 16px; font-weight: bold; color: #f8fafc; padding: 8px;")
         layout.addWidget(title)
 
@@ -266,7 +276,7 @@ class MesasDialog(QDialog):
         btn_refresh = QPushButton("♻️  Refresh")
         btn_refresh.clicked.connect(self.refresh)
         btn_close = QPushButton("Close")
-        btn_close.clicked.connect(self.hide)  # Hide, don't destroy
+        btn_close.clicked.connect(self.hide)
         btn_row.addWidget(btn_refresh)
         btn_row.addStretch()
         btn_row.addWidget(btn_close)
@@ -279,7 +289,6 @@ class MesasDialog(QDialog):
             self._refresh_thread.wait(2000)
 
     def refresh(self):
-        """Send a fetch request to the persistent worker."""
         self.table.setRowCount(0)
         self.table.setRowCount(1)
         item = QTableWidgetItem("Loading...")
@@ -289,20 +298,19 @@ class MesasDialog(QDialog):
 
     def _on_refresh_done(self, pedidos):
         try:
-            self.isVisible()  # guard against deleted dialog
+            self.isVisible()
         except RuntimeError:
             return
         self._pedidos = pedidos or []
         self._populate(self._pedidos)
 
     def populate_from_data(self, pedidos):
-        """Populate from pre-fetched data (called by auto-sync)."""
         self._pedidos = pedidos or []
         self._populate(self._pedidos)
 
     def _populate(self, pedidos):
         self.table.setRowCount(0)
-        orange = QColor("#92400e")  # dark amber background for urgent rows
+        orange = QColor("#92400e")
         amber_text = QColor("#fbbf24")
         for pedido in pedidos:
             row = self.table.rowCount()
@@ -317,7 +325,7 @@ class MesasDialog(QDialog):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row, col, item)
-            # Highlight urgent orders
+
             if estado in ("POR_FACTURAR", "EN_ESPERA", "PENDIENTE"):
                 for col in range(6):
                     self.table.item(row, col).setBackground(QBrush(orange))
@@ -333,30 +341,71 @@ class MesasDialog(QDialog):
             QMessageBox.warning(self, "Error", "Order has no UUID.")
             return
 
-        total_str = f"$ {pedido.get('total_general', 0):,.2f}"
-        subtotal_str = f"$ {pedido.get('subtotal', 0):,.2f}"
-        itbis_str = f"$ {pedido.get('total_impuestos', 0):,.2f}"
-        legal_tip_str = f"$ {pedido.get('propina_legal', 0):,.2f}"
+        subtotal_val = float(pedido.get('subtotal') or 0.0)
+        itbis_val = float(pedido.get('total_impuestos') or 0.0)
 
-        # Show Mock Verifone Payment Flow
-        dialog = VerifoneDialog(total_str, subtotal_str=subtotal_str, itbis_str=itbis_str, legaltip_str=legal_tip_str, parent=self)
-        if dialog.exec() == QDialog.Accepted:
-            # Payment success -> Tell CORE the order is paid
+        try:
+            prop_legal = float(pedido.get('propina_legal') or 0.0)
+        except (ValueError, TypeError):
+            prop_legal = 0.0
+        if prop_legal <= 0.0:
+            prop_legal = subtotal_val * 0.10
+
+        extra_tip_input, ok_tip = QInputDialog.getText(
+            self, "Extra Tip", "Enter extra tip amount (or leave blank for $0):")
+        if not ok_tip:
+            return
+        try:
+            prop_extra = float(extra_tip_input.strip()) if extra_tip_input.strip() else 0.0
+        except (ValueError, TypeError):
+            prop_extra = 0.0
+
+        # Recalculate total including the extra tip
+        total_val = subtotal_val + itbis_val + prop_legal + prop_extra
+
+        subtotal_str = f"$ {subtotal_val:,.2f}"
+        itbis_str = f"$ {itbis_val:,.2f}"
+        legal_tip_str = f"$ {prop_legal:,.2f}"
+        extra_tip_str = f"$ {prop_extra:,.2f}"
+        total_str = f"$ {total_val:,.2f}"
+
+        dialog = VerifoneDialog(total_str, subtotal_str=subtotal_str, itbis_str=itbis_str, legaltip_str=legal_tip_str, extratip_str=extra_tip_str, parent=self)
+        result = dialog.exec()
+        dialog.deleteLater()
+        
+        if result == QDialog.Accepted:
             ok, msg = self.sincronizador.notificar_facturacion_remota(uuid)
             if ok:
-                QMessageBox.information(self, "Transaction Successful", "Order has been paid and closed.")
-                
-                # Update stock synchronously so user sees it right away
+                pedido['propina_extra'] = prop_extra
+                pedido['propina_legal'] = prop_legal
+                pedido['total_general'] = total_val
+
                 carrito = pedido.get("carrito", [])
+                mesa = pedido.get("mesa", "")
+                cliente = f"Table {mesa}" if mesa and str(mesa).strip() else "TABLE CUSTOMER"
+                try:
+                    self.pos.generar_ticket_desde_pedido(
+                        pedido=pedido,
+                        carrito_raw=carrito,
+                        ncf_tipo="CONSUMER",
+                        ncf_num="B0200000001",
+                        notas="",
+                        cliente=cliente,
+                    )
+                    print(f"✅ Ticket generated for remote order {uuid}", flush=True)
+                except Exception as ticket_err:
+                    print(f"⚠️ Could not generate ticket for {uuid}: {ticket_err}", flush=True)
+
+                QMessageBox.information(self, "Transaction Successful", "Order has been paid, closed, and ticket generated.")
+
                 self.pos.descontar_stock_remoto(carrito)
 
                 self.refresh()
-                # Also do a full sync to fetch any other backend changes
                 parent = self.parentWidget()
                 if parent and hasattr(parent, '_start_sync'):
                     parent._start_sync(parent._on_manual_sync_done, fetch_pedidos=True, full_sync=True)
             else:
-                QMessageBox.critical(self, "CORE Notification Failed", 
+                QMessageBox.critical(self, "CORE Notification Failed",
                     f"Payment went through, but failed to notify CORE:\n{msg}")
 
 
@@ -366,13 +415,12 @@ class MainWindow(QMainWindow):
         self.pos = POSService()
         self.sincronizador = SyncService()
         self.carrito = []
-        self.ventas_turno = 0.0  # Variable en memoria para el visor de caja
+        self.ventas_turno = 0.0
         self.fondo_inicial = 0.0
-        self._mesas_dialog = None  # Track open mesas dialog
-        self._auto_sync_counter = 0  # Count auto-sync ticks for 30s order poll
-        self._current_sync_callback = None  # Which callback to route results to
+        self._mesas_dialog = None
+        self._auto_sync_counter = 0
+        self._current_sync_callback = None
         
-        # --- PERSISTENT SYNC THREAD (lives for entire app lifetime) ---
         self._sync_thread = QThread(self)
         self._sync_worker = SyncWorker(self.sincronizador)
         self._sync_worker.moveToThread(self._sync_thread)
@@ -393,11 +441,9 @@ class MainWindow(QMainWindow):
         
         self.sync_timer = QTimer(self)
         self.sync_timer.timeout.connect(self.auto_sync)
-        # Timer starts every 5s after login, but we do one initial sync NOW
         self.auto_sync()
 
     def closeEvent(self, event):
-        """Handle application close: stop timer, then cleanly stop all persistent threads."""
         if self.sync_timer.isActive():
             self.sync_timer.stop()
         if self._mesas_dialog is not None:
@@ -449,11 +495,9 @@ class MainWindow(QMainWindow):
     def init_ventas(self):
         w = QWidget(); main_l = QVBoxLayout(w); main_l.setContentsMargins(20, 20, 20, 20)
         
-        # --- PANEL SUPERIOR: VISOR DE CAJA Y CONTROLES ---
         top_frame = QFrame(); top_frame.setObjectName("CajaFrame")
         top_layout = QHBoxLayout(top_frame); top_layout.setContentsMargins(15, 10, 15, 10)
         
-        # Visor de telemetría de efectivo
         telemetria_layout = QHBoxLayout()
         self.lbl_fondo = QLabel("FUND: $ 0.00"); self.lbl_fondo.setStyleSheet("color: #94a3b8; font-weight: bold; font-size: 16px;")
         self.lbl_ventas = QLabel("SALES: $ 0.00"); self.lbl_ventas.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 16px;")
@@ -473,10 +517,8 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(btn_mesas); top_layout.addWidget(btn_close)
         main_l.addWidget(top_frame)
 
-        # --- PANEL CENTRAL: BUSCADOR Y TABLA ---
         mid_layout = QHBoxLayout()
         
-        # Buscador con autocompletado
         search_l = QVBoxLayout()
         self.search = QLineEdit(); self.search.setPlaceholderText(" Search product by name or ID...")
         self.search.textChanged.connect(self.on_typing)
@@ -513,13 +555,11 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["PRODUCT", "QTY", "UNIT PRICE"])
         
-        # Columns scale with available space
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)          # Product fills remaining
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Qty fits content
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Price fits content
+        header.setSectionResizeMode(0, QHeaderView.Stretch)   
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  
         
-        # Hide vertical header (row numbers)
         self.table.verticalHeader().hide()
         
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -530,10 +570,8 @@ class MainWindow(QMainWindow):
         mid_layout.addLayout(right_l, stretch=2)
         main_l.addLayout(mid_layout, stretch=1)
 
-        # --- PANEL INFERIOR: FACTURACIÓN Y COBRO ---
         bot_layout = QHBoxLayout()
         
-        # Datos Fiscales
         fiscal_frame = QFrame(); fiscal_frame.setObjectName("CajaFrame")
         fiscal_l = QVBoxLayout(fiscal_frame)
         self.txt_cliente = QLineEdit(); self.txt_cliente.setPlaceholderText("Customer Name (Optional)")
@@ -542,7 +580,6 @@ class MainWindow(QMainWindow):
         fiscal_l.addWidget(QLabel("BILLING DETAILS")); fiscal_l.addWidget(self.txt_cliente)
         fiscal_l.addWidget(self.txt_notes); fiscal_l.addWidget(self.cb_ncf)
         
-        # Método de Pago
         pago_frame = QFrame(); pago_frame.setObjectName("CajaFrame")
         pago_l = QVBoxLayout(pago_frame)
         self.cb_metodo = QComboBox(); self.cb_metodo.addItems(["CASH", "CARD", "TRANSFER"])
@@ -554,7 +591,6 @@ class MainWindow(QMainWindow):
         pago_l.addWidget(QLabel("ADDITIONAL TIP")); pago_l.addWidget(self.txt_extra_tip)
         pago_l.addStretch()
         
-        # Resumen y Cobro (Destacado)
         cobro_frame = QFrame(); cobro_frame.setObjectName("CobroFrame")
         calc_l = QVBoxLayout(cobro_frame)
         
@@ -577,7 +613,6 @@ class MainWindow(QMainWindow):
         
         bot_layout.addWidget(fiscal_frame, 2); bot_layout.addWidget(pago_frame, 1); bot_layout.addWidget(cobro_frame, 2)
         
-        # Wrap bottom layout in a widget to stop it from pushing the grid up uncontrollably
         bot_wrapper = QWidget()
         bot_wrapper.setLayout(bot_layout)
         bot_wrapper.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
@@ -586,10 +621,8 @@ class MainWindow(QMainWindow):
         
         self.stack.addWidget(w)
         
-        # Load initial catalog
         self.load_catalog()
 
-    # --- WRAPPERS PARA ALERTAS Y LOGS EN CONSOLA ---
     def show_info(self, title, msg):
         print(f"ℹ️ UI INFO [{title}]: {msg}", flush=True)
         QMessageBox.information(self, title, msg)
@@ -602,7 +635,6 @@ class MainWindow(QMainWindow):
         print(f"❌ UI ERROR [{title}]: {msg}", flush=True)
         QMessageBox.critical(self, title, msg)
 
-    # --- LÓGICA DE INTERFAZ ---
 
     def load_catalog(self, categoria=None, search_term=None):
         for i in reversed(range(self.prod_layout.count())): 
@@ -643,35 +675,28 @@ class MainWindow(QMainWindow):
             self.cat_layout.addWidget(btn)
         self.cat_layout.addStretch()
 
-    # --- SYNC THREADING HELPERS ---
 
     def _start_sync(self, on_done_callback, fetch_pedidos=False, full_sync=False):
-        """Send a work request to the persistent sync worker.
-        If the worker is busy, the request is silently skipped.
-        """
         self._current_sync_callback = on_done_callback
         self._sync_worker.request.emit(fetch_pedidos, full_sync)
 
     def _on_sync_result(self, sync_ok, sync_msg, categorias, pedidos):
-        """Route results from the persistent worker to the appropriate callback."""
         cb = self._current_sync_callback
         if cb:
             cb(sync_ok, sync_msg, categorias, pedidos)
 
-    # --- LÓGICA DE NEGOCIO ---
 
     def do_login(self):
             u_id = self.u.text()
             clave = self.p.text()
             
-            # 1. Local Login (Guarantees access even if offline)
+
             if self.pos.login(u_id, clave): 
-                # 2. Try to get a token from the Gateway in the background
+
                 auth_ok, msg = self.sincronizador.autenticar(u_id, clave)
                 if not auth_ok:
                     print(f"⚠️ Offline Mode or Auth Error: {msg}. Continuing with local cache.")
                 
-                # 3. Start the auto-sync timer now that we have credentials/token
                 if not self.sync_timer.isActive():
                     self.sync_timer.start(5000)
                 
@@ -681,7 +706,6 @@ class MainWindow(QMainWindow):
 
     def do_apertura(self):
         if self.pos.abrir_turno(self.f.text()):
-            # Inicializamos el visor de caja
             self.fondo_inicial = float(self.pos.active_turno.monto_inicial)
             self.ventas_turno = 0.0
             self.actualizar_visor_caja()
@@ -699,7 +723,7 @@ class MainWindow(QMainWindow):
         if len(text) >= 2:
             self.load_catalog(search_term=text)
         else: 
-            self.load_catalog() # Restores full list
+            self.load_catalog()
 
     def agregar_a_tabla(self, p, source_btn=None):
         if source_btn:
@@ -712,28 +736,29 @@ class MainWindow(QMainWindow):
                     try:
                         btn.setStyleSheet(style)
                     except RuntimeError:
-                        pass  # Widget was deleted before timer fired
+                        pass
                 QTimer.singleShot(150, _reset_style)
             
             
         idx = next((i for (i, it) in enumerate(self.carrito) if it["id"] == p.id_producto), None)
         if idx is not None:
-            if self.carrito[idx]['cant'] + 1 > p.stock_local:
+            # 9999 = unlimited stock, never block adding more
+            if p.stock_local != 9999 and self.carrito[idx]['cant'] + 1 > p.stock_local:
                 self.show_warning("Stock Limit Reached", f"Cannot add more '{p.nombre}'. Only {p.stock_local} available in stock.")
                 return
             self.carrito[idx]['cant'] += 1
-            # Update Qty in column 1
+
             self.table.item(idx, 1).setText(str(self.carrito[idx]['cant']))
         else:
-            if p.stock_local < 1:
+            if p.stock_local != 9999 and p.stock_local < 1:
                 self.show_warning("Out of Stock", f"'{p.nombre}' is out of stock.")
                 return
             row = self.table.rowCount(); self.table.insertRow(row)
-            # Column 0: Product Name
+
             self.table.setItem(row, 0, QTableWidgetItem(p.nombre))
-            # Column 1: Quantity
+
             self.table.setItem(row, 1, QTableWidgetItem("1"))
-            # Column 2: Unit Price
+
             self.table.setItem(row, 2, QTableWidgetItem(str(p.precio_actual)))
             self.carrito.append({'id': p.id_producto, 'nombre': p.nombre, 'precio': p.precio_actual, 'cant': 1, 'tasa': p.tasa_impuesto, 'stock': p.stock_local})
         self.update_totals()
@@ -773,9 +798,9 @@ class MainWindow(QMainWindow):
         if not self.carrito: 
             return self.show_warning("Attention", "No products in the cart.")
             
-        # Validate stock during checkout as an extra safety measure
         for item in self.carrito:
-            if item['cant'] > item.get('stock', 0):
+            # 9999 = unlimited stock, skip validation
+            if item.get('stock') != 9999 and item['cant'] > item.get('stock', 0):
                 return self.show_warning("Stock Validation Error", f"The order quantity for '{item['nombre']}' exceeds available stock ({item.get('stock', 0)} available). Please adjust the cart.")
         
         ncf_num = "B0200000001" if "CONSUMER" in self.cb_ncf.currentText() else "B0100000001"
@@ -797,8 +822,8 @@ class MainWindow(QMainWindow):
             cliente = "CASH CUSTOMER"
         
         try:
-            extra = float(self.txt_extra_tip.text().strip())
-        except ValueError:
+            extra = float(self.txt_extra_tip.text().strip() or '0')
+        except (ValueError, TypeError):
             extra = 0.0
             
         sub, imp, pro, total_venta = self.pos.calcular_totales(self.carrito, propina_extra=extra)
@@ -809,8 +834,13 @@ class MainWindow(QMainWindow):
             itbis_str = f"$ {imp:,.2f}"
             legal_tip_str = f"$ {pro:,.2f}"
 
-            dialog = VerifoneDialog(total_str, subtotal_str=subtotal_str, itbis_str=itbis_str, legaltip_str=legal_tip_str, parent=self)
-            if dialog.exec() != QDialog.Accepted:
+            extra_tip_str = f"$ {extra:,.2f}"
+
+            dialog = VerifoneDialog(total_str, subtotal_str=subtotal_str, itbis_str=itbis_str, legaltip_str=legal_tip_str, extratip_str=extra_tip_str, parent=self)
+            result = dialog.exec()
+            dialog.deleteLater()
+            
+            if result != QDialog.Accepted:
                 return
         
         cambio, msg = self.pos.procesar_venta(
@@ -819,17 +849,16 @@ class MainWindow(QMainWindow):
         )
         
         if cambio is not None:
-            # Actualizamos el visor de caja en memoria
+
             self.ventas_turno += float(total_venta)
             self.actualizar_visor_caja()
             
             self.show_info("Successful Transaction", f"Invoice saved correctly.\n\nChange to return: $ {cambio:,.2f}")
             
-            # Limpieza del panel
             self.carrito = []; self.table.setRowCount(0); self.txt_extra_tip.clear(); self.update_totals()
             self.cash.clear(); self.txt_cliente.clear(); self.txt_notes.clear()
             self.cb_metodo.setCurrentIndex(0); self.cb_ncf.setCurrentIndex(0)
-            self.load_catalog()  # Instantly update local UI product grid so minus stock shows
+            self.load_catalog()
             self.search.setFocus()
         else: 
             self.show_warning("Transaction Error", msg)
@@ -848,7 +877,6 @@ class MainWindow(QMainWindow):
                 )
                 self.show_info("Close Completed", reporte)
                 
-                # Reseteamos variables y bloqueamos terminal volviendo al login
                 self.ventas_turno = 0.0; self.fondo_inicial = 0.0
                 self.u.clear(); self.p.clear(); self.f.clear()
                 self.stack.setCurrentIndex(0)
@@ -856,7 +884,6 @@ class MainWindow(QMainWindow):
                 self.show_error("Fatal Error", f"Could not close the register: {str(e)}")
 
     def do_abrir_mesas(self):
-        """Open the Active Tables dialog. Creates it once, then reuses it."""
         if self._mesas_dialog is None:
             self._mesas_dialog = MesasDialog(self.sincronizador, self.pos, parent=self)
             self._mesas_dialog.order_selected.connect(self._on_pedido_importado)
@@ -866,14 +893,12 @@ class MainWindow(QMainWindow):
         self._mesas_dialog.activateWindow()
 
     def _on_pedido_importado(self, data):
-        """Called when user double-clicks an order in MesasDialog."""
         carrito = data.get("carrito", [])
         mesa = data.get("mesa", "")
         if not carrito:
             self.show_warning("Empty Order", "The selected order has no importable items.")
             return
 
-        # Load cart into UI
         self.carrito = carrito
         self.table.setRowCount(0)
         for item in carrito:
@@ -884,7 +909,6 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 2, QTableWidgetItem(str(item['precio'])))
         self.update_totals()
 
-        # Pre-fill customer if we have a mesa
         if mesa and str(mesa).strip():
             self.txt_cliente.setText(f"Table {mesa}")
 
@@ -893,17 +917,14 @@ class MainWindow(QMainWindow):
             f"Please select the NCF type and payment method, then press BILL.")
 
     def do_sincronizacion(self):
-        """Sincroniza con el Core incluyendo empleados, categorias y ventas (threaded)."""
         self._start_sync(self._on_manual_sync_done, fetch_pedidos=True)
 
     def _on_manual_sync_done(self, sync_ok, sync_msg, categorias, pedidos):
-        """Callback on main thread after manual sync finishes."""
         if categorias:
             self.build_category_filters(categorias)
         if pedidos and self._mesas_dialog and self._mesas_dialog.isVisible():
             self._mesas_dialog.populate_from_data(pedidos)
             
-        # Refresh the UI grid with the new products from the DB
         if hasattr(self, 'search') and not self.search.text():
             self.load_catalog()
             
@@ -913,28 +934,21 @@ class MainWindow(QMainWindow):
             self.show_warning("Sync Failed", sync_msg)
 
     def auto_sync(self):
-        """Sincroniza silenciosamente en background (threaded)."""
-        # Every 6 ticks (30s if timer is 5s) also fetch pending orders
         self._auto_sync_counter += 1
         fetch = (self._auto_sync_counter % 6 == 0)
-        # Full DB Sync (Products, categories, etc) only on First Tick or Every 5 minutes (60 ticks)
         do_full = (self._auto_sync_counter == 1 or self._auto_sync_counter % 60 == 0)
         self._start_sync(self._on_auto_sync_done, fetch_pedidos=fetch, full_sync=do_full)
 
     def _on_auto_sync_done(self, sync_ok, sync_msg, categorias, pedidos):
-        """Callback on main thread after auto-sync finishes. Silent — no dialogs."""
         if categorias:
             self.build_category_filters(categorias)
-        # Refresh mesas dialog if open
         if pedidos and self._mesas_dialog and self._mesas_dialog.isVisible():
             self._mesas_dialog.populate_from_data(pedidos)
         
-        # Silently update catalog to load new products
         if hasattr(self, 'search') and not self.search.text():
             self.load_catalog()
 
     def closeEvent(self, event):
-        """Cleanly handle application exit by shutting down all worker threads."""
         try:
             if hasattr(self, '_sync_thread') and self._sync_thread.isRunning():
                 self._sync_thread.quit()
