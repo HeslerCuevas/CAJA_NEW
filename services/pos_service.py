@@ -1,6 +1,7 @@
 from db.connection import SessionLocal, transaction_scope
 from models.entities import UsuarioLocal, ProductoLocal, TurnoCaja, FacturaLocal, DetalleFactura, LogCaja, SystemAppLog
 import traceback
+from services.auth_service import AuthService
 import bcrypt
 from decimal import Decimal
 import datetime

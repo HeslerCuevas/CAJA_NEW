@@ -1,3 +1,4 @@
+import time
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QLineEdit, QPushButton, QStackedWidget, 
                              QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -137,6 +138,9 @@ class StockWorker(QObject):
         super().__init__()
         self.sincronizador = sincronizador
         self._busy = False
+        # Set to True by _activate_stock_cooldown to prevent in-flight
+        # requests from overwriting correctly-deducted local stock values.
+        self._skip_persist = False
 
     def on_request(self, product_ids):
         print(f"[StockWorker] on_request received {len(product_ids)} ids, _busy={self._busy}", flush=True)
@@ -147,12 +151,18 @@ class StockWorker(QObject):
         try:
             # Step 1 — fetch all stock values from the API
             for pid in product_ids:
+                # Bail out early if a sale happened mid-fetch
+                if self._skip_persist:
+                    print(f"[StockWorker] ABORT — cooldown activated mid-fetch", flush=True)
+                    stock_data = {}
+                    break
                 stock = self.sincronizador.obtener_stock_producto(pid)
                 if stock != -1:
                     stock_data[pid] = stock
 
-            # Step 2 — persist every result to the local SQL Server DB
-            if stock_data:
+            # Step 2 — persist every result to the local SQL Server DB,
+            #          BUT ONLY if no post-sale cooldown is active.
+            if stock_data and not self._skip_persist:
                 from db.connection import SessionLocal
                 from models.entities import ProductoLocal
                 db = SessionLocal()
@@ -168,6 +178,9 @@ class StockWorker(QObject):
                     print(f"[StockWorker] DB persist error: {db_err}", flush=True)
                 finally:
                     db.close()
+            elif self._skip_persist:
+                print(f"[StockWorker] SKIPPED DB persist — post-sale cooldown active", flush=True)
+                stock_data = {}  # Send empty so _on_stock_result doesn't use stale values
         except Exception as e:
             print(f"[StockWorker] Unexpected error: {e}", flush=True)
         finally:
@@ -455,6 +468,8 @@ class MesasDialog(QDialog):
 
                 self.refresh()
                 parent = self.parentWidget()
+                if parent and hasattr(parent, '_activate_stock_cooldown'):
+                    parent._activate_stock_cooldown()
                 if parent and hasattr(parent, '_start_sync'):
                     parent._start_sync(parent._on_manual_sync_done, fetch_pedidos=True, full_sync=True)
             else:
@@ -473,6 +488,10 @@ class MainWindow(QMainWindow):
         self._mesas_dialog = None
         self._auto_sync_counter = 0
         self._current_sync_callback = None
+        # Cooldown (seconds) after a sale before we allow stock GETs, so the
+        # Gateway transaction has time to commit inventory changes first.
+        self._post_sale_stock_delay_s = 2.0
+        self._stock_cooldown_until = 0.0  # epoch timestamp; 0 = no cooldown
         
         self._sync_thread = QThread(self)
         self._sync_worker = SyncWorker(self.sincronizador)
@@ -508,7 +527,35 @@ class MainWindow(QMainWindow):
         self.stock_timer = QTimer(self)
         self.stock_timer.timeout.connect(self.request_stock_update)
 
+    def _activate_stock_cooldown(self):
+        """Block all stock GETs for _post_sale_stock_delay_s seconds, then
+        schedule a single guaranteed refresh once the cooldown expires.
+        Also poisons in-flight requests so they don't overwrite local DB."""
+        self._stock_cooldown_until = time.monotonic() + self._post_sale_stock_delay_s
+        # Tell the background worker to abort/skip DB persist if mid-fetch
+        self._stock_worker._skip_persist = True
+        # Flush the live cache — it may contain stale pre-sale values.
+        # load_catalog will use the correctly-deducted local DB values instead.
+        self._live_stock_cache.clear()
+        delay_ms = int(self._post_sale_stock_delay_s * 1000) + 200  # small extra margin
+        print(f"[StockCooldown] Activated — blocking ALL stock activity for {self._post_sale_stock_delay_s}s", flush=True)
+        QTimer.singleShot(delay_ms, self._on_cooldown_expired)
+
+    def _on_cooldown_expired(self):
+        """Called by QTimer.singleShot when the post-sale cooldown ends."""
+        self._stock_worker._skip_persist = False
+        print("[StockCooldown] Expired — re-enabling stock fetches", flush=True)
+        self.request_stock_update()
+
     def request_stock_update(self):
+        # If we're inside the post-sale cooldown window, skip this request.
+        # A deferred call is already scheduled by _activate_stock_cooldown.
+        now = time.monotonic()
+        if now < self._stock_cooldown_until:
+            remaining = self._stock_cooldown_until - now
+            print(f"[StockTimer] BLOCKED — post-sale cooldown active ({remaining:.1f}s left)", flush=True)
+            return
+
         token_ok = bool(self.sincronizador.token)
         btn_count = len(self.product_buttons) if hasattr(self, 'product_buttons') else 0
         busy = self._stock_worker._busy
@@ -523,6 +570,17 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_stock_result(self, stock_data):
+        # If a post-sale cooldown is active, discard these results entirely —
+        # they are from a pre-sale in-flight request and contain stale data
+        # that would overwrite the correctly-deducted local stock.
+        if time.monotonic() < self._stock_cooldown_until:
+            print(f"[_on_stock_result] DISCARDED {len(stock_data)} stale values — cooldown active", flush=True)
+            return
+
+        if not stock_data:
+            print("[_on_stock_result] Empty result — nothing to update", flush=True)
+            return
+
         print(f"[_on_stock_result] Received {len(stock_data)} stock values — updating buttons", flush=True)
         # Update the live cache so future load_catalog() calls start with fresh stock
         self._live_stock_cache.update(stock_data)
@@ -765,10 +823,15 @@ class MainWindow(QMainWindow):
             
         row, col, max_cols = 0, 0, 4
         self.product_buttons.clear()
+        # During post-sale cooldown the live cache has been flushed, so we
+        # must use the local DB values (which procesar_venta already deducted).
+        in_cooldown = time.monotonic() < self._stock_cooldown_until
         for p in productos:
-            # Use live API stock if available, else fall back to local DB value
-            live_stock = self._live_stock_cache.get(p.id_producto, p.stock_local)
-            btn = QPushButton(f"{p.nombre}\n$ {p.precio_actual:,.2f}\nStock: {live_stock}")
+            if in_cooldown:
+                display_stock = p.stock_local  # Correctly deducted by procesar_venta
+            else:
+                display_stock = self._live_stock_cache.get(p.id_producto, p.stock_local)
+            btn = QPushButton(f"{p.nombre}\n$ {p.precio_actual:,.2f}\nStock: {display_stock}")
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             btn.setStyleSheet("background-color: #1e293b; color: #f8fafc; border: 1px solid #38bdf8; border-radius: 8px; padding: 10px; font-weight: bold; min-height: 80px;")
             btn.clicked.connect(lambda checked, prod=p, button=btn: self.agregar_a_tabla(prod, button))
@@ -777,7 +840,8 @@ class MainWindow(QMainWindow):
             col += 1
             if col >= max_cols:
                 col = 0; row += 1
-        # Only request a fresh stock update when we have a valid auth token
+        # Request a stock refresh — request_stock_update() will self-gate
+        # if a post-sale cooldown is still active.
         if self.sincronizador.token:
             self.request_stock_update()
 
@@ -993,6 +1057,9 @@ class MainWindow(QMainWindow):
             self.carrito = []; self.table.setRowCount(0); self.txt_extra_tip.clear(); self.update_totals()
             self.cash.clear(); self.txt_cliente.clear(); self.txt_notes.clear()
             self.cb_metodo.setCurrentIndex(0); self.cb_ncf.setCurrentIndex(0)
+            # Activate the stock cooldown so ALL stock GETs (timer, catalog,
+            # sync) are blocked until the Gateway commits its transaction.
+            self._activate_stock_cooldown()
             self.load_catalog()
             self.search.setFocus()
         else: 
@@ -1093,6 +1160,12 @@ class MainWindow(QMainWindow):
             self.show_warning("Sync Failed", sync_msg)
 
     def auto_sync(self):
+        # If a post-sale cooldown is active, skip this entire sync cycle so
+        # sincronizar_productos() doesn't fetch stale stock from the Gateway.
+        if time.monotonic() < self._stock_cooldown_until:
+            print("[AutoSync] SKIPPED — post-sale stock cooldown active", flush=True)
+            return
+
         self._auto_sync_counter += 1
 
         # If the API was down at login time, retry token acquisition silently.

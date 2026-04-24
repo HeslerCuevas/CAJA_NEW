@@ -53,26 +53,29 @@ class SyncService:
                         if turno:
                             user_id = turno.id_usuario
 
-                    # PedidoCreate schema: detalles only need producto_id + cantidad.
-                    # Financial fields (precio_unitario, monto_impuesto, subtotal_linea)
-                    # belong to DetallePedidoRequest and must NOT be sent here.
                     detalles_create = [
                         {
                             "producto_id": d.id_producto,
                             "cantidad": d.cantidad,
+                            "precio_unitario": float(d.precio_unitario),
+                            "monto_impuesto": float(d.monto_impuesto),
+                            "subtotal_linea": float(d.subtotal_linea),
                             "detalle_local_uuid": str(d.id_detalle) if hasattr(d, 'id_detalle') else None,
                         }
                         for d in detalles
                     ]
 
-                    # PedidoCreate payload — no subtotal / total_general / propina_legal here.
                     payload = {
                         "empleado_id": user_id,
                         "canal_origen": v.canal_origen or "CAJA",
                         "factura_local_uuid": str(v.id_factura),
                         "mesa": v.mesa,
                         "cliente_id": v.id_cliente,
+                        "subtotal": float(v.subtotal),
+                        "total_impuestos": float(v.total_impuestos),
+                        "propina_legal": float(v.propina_legal) if hasattr(v, 'propina_legal') and v.propina_legal else 0.0,
                         "propina_extra": float(v.propina_extra) if hasattr(v, 'propina_extra') and v.propina_extra else 0.0,
+                        "total_general": float(v.total_general),
                         "detalles": detalles_create,
                     }
 
