@@ -1,7 +1,7 @@
 import requests
 import traceback
 from db.connection import SessionLocal, transaction_scope
-from models.entities import FacturaLocal, UsuarioLocal, SystemAppLog
+from models.entities import FacturaLocal, UsuarioLocal, SystemAppLog, DetalleFactura, TurnoCaja
 
 
 class SyncService:
@@ -38,19 +38,55 @@ class SyncService:
         db = SessionLocal()
         try:
             ventas = db.query(FacturaLocal).filter(FacturaLocal.sincronizado == False).all()
-            
+
             if not ventas:
                 return True, "No pending sales to sync."
 
-            headers = {}
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
-            url_sync = f"{self.api_base_url}/api/v1/pedidos"
-            
             exitos = 0
             for v in ventas:
-                v.sincronizado = True
-                exitos += 1
+                try:
+                    detalles = db.query(DetalleFactura).filter_by(id_factura=v.id_factura).all()
+
+                    user_id = None
+                    if v.id_turno:
+                        turno = db.query(TurnoCaja).filter_by(id_turno=v.id_turno).first()
+                        if turno:
+                            user_id = turno.id_usuario
+
+                    # PedidoCreate schema: detalles only need producto_id + cantidad.
+                    # Financial fields (precio_unitario, monto_impuesto, subtotal_linea)
+                    # belong to DetallePedidoRequest and must NOT be sent here.
+                    detalles_create = [
+                        {
+                            "producto_id": d.id_producto,
+                            "cantidad": d.cantidad,
+                            "detalle_local_uuid": str(d.id_detalle) if hasattr(d, 'id_detalle') else None,
+                        }
+                        for d in detalles
+                    ]
+
+                    # PedidoCreate payload — no subtotal / total_general / propina_legal here.
+                    payload = {
+                        "empleado_id": user_id,
+                        "canal_origen": v.canal_origen or "CAJA",
+                        "factura_local_uuid": str(v.id_factura),
+                        "mesa": v.mesa,
+                        "cliente_id": v.id_cliente,
+                        "propina_extra": float(v.propina_extra) if hasattr(v, 'propina_extra') and v.propina_extra else 0.0,
+                        "detalles": detalles_create,
+                    }
+
+                    # crear_pedido now handles both create + /facturar internally.
+                    ok, msg = self.crear_pedido(payload)
+                    if ok:
+                        v.sincronizado = True
+                        exitos += 1
+                    else:
+                        SyncService._log("WARNING", "SyncService.sincronizar_ventas",
+                                         f"Failed to create/bill {v.id_factura}: {msg}")
+
+                except Exception as ex:
+                    SyncService._log("ERROR", "SyncService.sincronizar_ventas", f"Error syncing sale {v.id_factura}", ex)
 
             db.commit()
             SyncService._log("INFO", "SyncService.sincronizar_ventas", f"Synced {exitos} pending sales.")
@@ -251,48 +287,113 @@ class SyncService:
             SyncService._log("ERROR", "SyncService.sincronizar_productos", "Connection error during product sync", e)
             return False, str(e)
 
-    def crear_pedido(self, payload: dict):
-        url = f"{self.api_base_url}/api/v1/pedidos/"
+    def obtener_stock_producto(self, producto_id):
+        url = f"{self.api_base_url}/api/v1/inventario/{producto_id}"
         headers = {"Accept": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
-            print(f"📡 Sending local sale to CORE: POST {url}", flush=True)
-            response = requests.post(url, headers=headers, json=payload, timeout=10)
-            print(f"📡 Local sale sync response: HTTP {response.status_code}", flush=True)
-            if response.status_code in (200, 201):
-                return True, "Pedido created successfully."
-            error_text = response.text[:200] if response.text else "No response body"
-            return False, f"CORE returned HTTP {response.status_code}: {error_text}"
+            print(f"[Stock] Requesting stock for producto {producto_id}", flush=True)
+            response = requests.get(url, headers=headers, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                stock = (
+                    data.get("stock") if data.get("stock") is not None else
+                    None
+                )
+                if stock is not None:
+                    return int(stock)
+                print(f"[Stock] WARNING: No stock key found for producto {producto_id}: {data}", flush=True)
+                return -1
+            print(f"[Stock] WARNING: HTTP {response.status_code} for producto {producto_id}: {response.text[:200]}", flush=True)
+            return -1
         except Exception as e:
-            print(f"❌ Local sale sync connection error: {e}", flush=True)
+            print(f"[Stock] ERROR for producto {producto_id}: {e}", flush=True)
+            return -1
+
+    def crear_pedido(self, payload: dict):
+        """Create a new order in CORE and immediately bill it.
+        Step 1 — POST /api/v1/pedidos/          (PedidoCreate)
+        Step 2 — POST /api/v1/pedidos/{uuid}/facturar  (runs right after step 1 succeeds)
+        """
+        create_url = f"{self.api_base_url}/api/v1/pedidos/"
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        factura_uuid = payload.get("factura_local_uuid")
+
+        try:
+            # Step 1 — create the order
+            print(f"📡 [crear_pedido] POST {create_url}", flush=True)
+            response = requests.post(create_url, headers=headers, json=payload, timeout=10)
+            print(f"📡 [crear_pedido] Create response: HTTP {response.status_code} — {response.text[:200]}", flush=True)
+
+            if response.status_code not in (200, 201):
+                error_text = response.text[:200] if response.text else "No response body"
+                return False, f"CORE returned HTTP {response.status_code}: {error_text}"
+
+            # Step 2 — immediately bill the order
+            if factura_uuid:
+                ok, msg = self.notificar_facturacion_remota(str(factura_uuid))
+                if not ok:
+                    # Order was created but billing failed — log and surface the error.
+                    SyncService._log("WARNING", "SyncService.crear_pedido",
+                                     f"Order {factura_uuid} created but /facturar failed: {msg}")
+                    return False, f"Order created but billing failed: {msg}"
+
+            return True, "Pedido created and billed successfully."
+
+        except Exception as e:
+            print(f"❌ [crear_pedido] Connection error: {e}", flush=True)
             return False, f"Connection error: {str(e)}"
 
 
     def obtener_cuentas_abiertas(self):
-
         url = f"{self.api_base_url}/api/v1/pedidos/pendientes"
         headers = {"Accept": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
+            print(f"📡 [MESAS] GET {url}", flush=True)
             response = requests.get(url, headers=headers, timeout=10)
+            print(f"📡 [MESAS] HTTP {response.status_code}", flush=True)
+
             if response.status_code == 200:
+                raw = response.text
+                print(f"📡 [MESAS] Raw response (first 500 chars): {raw[:500]}", flush=True)
                 data = response.json()
 
+                # Unwrap envelope if the API returns {"pedidos": [...]} or similar
                 if isinstance(data, dict):
+                    print(f"📡 [MESAS] Response is a dict, keys: {list(data.keys())}", flush=True)
                     data = data.get("pedidos") or data.get("data") or data.get("results") or []
-                
+
+                print(f"📡 [MESAS] Orders in list: {len(data)}", flush=True)
+                if data:
+                    print(f"📡 [MESAS] Sample order keys: {list(data[0].keys())}", flush=True)
+                    print(f"📡 [MESAS] Sample order estados: {[p.get('estado') or p.get('Estado') for p in data[:5]]}", flush=True)
+
                 filtered_data = [p for p in data if (p.get("estado") or p.get("Estado")) == "POR_FACTURAR"]
-                
-                SyncService._log("INFO", "SyncService.obtener_cuentas_abiertas", 
-                                 f"Fetched {len(data)} total open orders, returning {len(filtered_data)} POR_FACTURAR.")
+
+                print(f"✅ [MESAS] {len(filtered_data)} POR_FACTURAR orders returned to UI.", flush=True)
+                SyncService._log(
+                    "INFO", "SyncService.obtener_cuentas_abiertas",
+                    f"Fetched {len(data)} orders from gateway, {len(filtered_data)} are POR_FACTURAR."
+                )
                 return filtered_data
+
             if response.status_code == 401:
+                print("⚠️ [MESAS] 401 Unauthorized — token expired or not set.", flush=True)
+                SyncService._log("WARNING", "SyncService.obtener_cuentas_abiertas", "401 Unauthorized fetching open orders.")
                 return []
-            SyncService._log("WARNING", "SyncService.obtener_cuentas_abiertas", f"HTTP {response.status_code}")
+
+            print(f"⚠️ [MESAS] Unexpected HTTP {response.status_code}: {response.text[:300]}", flush=True)
+            SyncService._log("WARNING", "SyncService.obtener_cuentas_abiertas",
+                             f"HTTP {response.status_code}: {response.text[:200]}")
             return []
         except Exception as e:
+            print(f"❌ [MESAS] Connection error: {e}", flush=True)
             SyncService._log("ERROR", "SyncService.obtener_cuentas_abiertas", "Connection error fetching open orders", e)
             return []
 

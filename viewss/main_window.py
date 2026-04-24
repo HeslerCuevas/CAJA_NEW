@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QListWidget, QListWidgetItem, QInputDialog, QComboBox,
                              QFrame, QScrollArea, QGridLayout, QSizePolicy,
                              QDialog, QDialogButtonBox)
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, Slot, QObject
 from PySide6.QtGui import QColor, QBrush
 from services.pos_service import POSService
 from services.sync_service import SyncService
@@ -127,6 +127,52 @@ class SyncWorker(QObject):
             sync_ok, sync_msg = False, str(e)
         self._busy = False
         self.finished.emit(sync_ok, sync_msg, categorias, pedidos)
+
+
+class StockWorker(QObject):
+    finished = Signal(object)   # Signal(object) reliably delivers dicts across threads
+    request = Signal(list)
+
+    def __init__(self, sincronizador):
+        super().__init__()
+        self.sincronizador = sincronizador
+        self._busy = False
+
+    def on_request(self, product_ids):
+        print(f"[StockWorker] on_request received {len(product_ids)} ids, _busy={self._busy}", flush=True)
+        if self._busy:
+            return
+        self._busy = True
+        stock_data = {}
+        try:
+            # Step 1 — fetch all stock values from the API
+            for pid in product_ids:
+                stock = self.sincronizador.obtener_stock_producto(pid)
+                if stock != -1:
+                    stock_data[pid] = stock
+
+            # Step 2 — persist every result to the local SQL Server DB
+            if stock_data:
+                from db.connection import SessionLocal
+                from models.entities import ProductoLocal
+                db = SessionLocal()
+                try:
+                    for pid, stock_val in stock_data.items():
+                        p = db.query(ProductoLocal).filter_by(id_producto=pid).first()
+                        if p:
+                            p.stock_local = stock_val
+                    db.commit()
+                    print(f"[StockWorker] OK - Persisted {len(stock_data)} stock values to DB", flush=True)
+                except Exception as db_err:
+                    db.rollback()
+                    print(f"[StockWorker] DB persist error: {db_err}", flush=True)
+                finally:
+                    db.close()
+        except Exception as e:
+            print(f"[StockWorker] Unexpected error: {e}", flush=True)
+        finally:
+            self._busy = False
+        self.finished.emit(stock_data)
 
 
 class VerifoneDialog(QDialog):
@@ -315,12 +361,19 @@ class MesasDialog(QDialog):
         for pedido in pedidos:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            mesa_val = pedido.get("mesa", "—")
-            canal = pedido.get("canal_origen", "—")
-            estado = pedido.get("estado", "—")
-            subtotal = f"$ {pedido.get('subtotal', 0):,.2f}"
-            total = f"$ {pedido.get('total_general', 0):,.2f}"
-            fecha = pedido.get("fecha_creacion", "—")
+
+            # All PedidoResponse fields are Optional — JSON null becomes Python None.
+            # Use `or` fallbacks so null values never reach a format string.
+            mesa_val  = pedido.get("mesa") or "—"
+            canal     = pedido.get("canal_origen") or "—"
+            estado    = pedido.get("estado") or "—"
+            subtotal  = f"$ {float(pedido.get('subtotal') or 0):,.2f}"
+            total     = f"$ {float(pedido.get('total_general') or 0):,.2f}"
+
+            # fecha_creacion arrives as a full ISO timestamp; trim to readable date+time.
+            raw_fecha = pedido.get("fecha_creacion") or ""
+            fecha = str(raw_fecha)[:19].replace("T", " ") if raw_fecha else "—"
+
             for col, val in enumerate([str(mesa_val), canal, estado, subtotal, total, fecha]):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
@@ -427,6 +480,15 @@ class MainWindow(QMainWindow):
         self._sync_worker.request.connect(self._sync_worker.on_request)
         self._sync_worker.finished.connect(self._on_sync_result)
         self._sync_thread.start()
+
+        self.product_buttons = {}
+        self._live_stock_cache = {}  # pid -> latest stock from API
+        self._stock_thread = QThread(self)
+        self._stock_worker = StockWorker(self.sincronizador)
+        self._stock_worker.moveToThread(self._stock_thread)
+        self._stock_worker.request.connect(self._stock_worker.on_request)
+        self._stock_worker.finished.connect(self._on_stock_result)
+        self._stock_thread.start()
         
         self.setMinimumSize(1000, 700)
         self.showMaximized()
@@ -443,14 +505,67 @@ class MainWindow(QMainWindow):
         self.sync_timer.timeout.connect(self.auto_sync)
         self.auto_sync()
 
-    def closeEvent(self, event):
-        if self.sync_timer.isActive():
-            self.sync_timer.stop()
-        if self._mesas_dialog is not None:
-            self._mesas_dialog.cleanup_thread()
-        if self._sync_thread.isRunning():
-            self._sync_thread.quit()
-            self._sync_thread.wait(3000)
+        self.stock_timer = QTimer(self)
+        self.stock_timer.timeout.connect(self.request_stock_update)
+
+    def request_stock_update(self):
+        token_ok = bool(self.sincronizador.token)
+        btn_count = len(self.product_buttons) if hasattr(self, 'product_buttons') else 0
+        busy = self._stock_worker._busy
+        print(f"[StockTimer] token={token_ok} buttons={btn_count} busy={busy}", flush=True)
+        if not self.sincronizador.token:
+            return
+        if btn_count > 0:
+            print(f"[StockTimer] Emitting request for {btn_count} products", flush=True)
+            self._stock_worker.request.emit(list(self.product_buttons.keys()))
+        else:
+            print("[StockTimer] No product buttons yet — skipping", flush=True)
+
+    @Slot(object)
+    def _on_stock_result(self, stock_data):
+        print(f"[_on_stock_result] Received {len(stock_data)} stock values — updating buttons", flush=True)
+        # Update the live cache so future load_catalog() calls start with fresh stock
+        self._live_stock_cache.update(stock_data)
+        updated = 0
+        for pid, stock in stock_data.items():
+            if pid in self.product_buttons:
+                btn, nombre, precio = self.product_buttons[pid]
+                try:
+                    btn.setText(f"{nombre}\n$ {precio:,.2f}\nStock: {stock}")
+                    updated += 1
+                except RuntimeError:
+                    print(f"[_on_stock_result] RuntimeError updating btn for pid={pid} (stale ref)", flush=True)
+            else:
+                # Try int cast in case of type mismatch
+                pid_int = int(pid) if not isinstance(pid, int) else pid
+                if pid_int in self.product_buttons:
+                    btn, nombre, precio = self.product_buttons[pid_int]
+                    try:
+                        btn.setText(f"{nombre}\n$ {precio:,.2f}\nStock: {stock}")
+                        updated += 1
+                    except RuntimeError:
+                        pass
+                else:
+                    print(f"[_on_stock_result] pid={pid} (type={type(pid).__name__}) not in product_buttons", flush=True)
+        print(f"[_on_stock_result] Updated {updated}/{len(stock_data)} buttons", flush=True)
+
+    def _cleanup_and_close(self, event):
+        """Single close-event implementation — stops timers and joins threads."""
+        try:
+            if hasattr(self, 'sync_timer') and self.sync_timer.isActive():
+                self.sync_timer.stop()
+            if hasattr(self, 'stock_timer') and self.stock_timer.isActive():
+                self.stock_timer.stop()
+            if self._mesas_dialog is not None:
+                self._mesas_dialog.cleanup_thread()
+            if hasattr(self, '_sync_thread') and self._sync_thread.isRunning():
+                self._sync_thread.quit()
+                self._sync_thread.wait(3000)
+            if hasattr(self, '_stock_thread') and self._stock_thread.isRunning():
+                self._stock_thread.quit()
+                self._stock_thread.wait(3000)
+        except Exception:
+            pass
         super().closeEvent(event)
 
     def init_login(self):
@@ -621,6 +736,8 @@ class MainWindow(QMainWindow):
         
         self.stack.addWidget(w)
         
+        # Load local data immediately so UI isn't empty while API syncs
+        self.build_category_filters(self.pos.obtener_categorias())
         self.load_catalog()
 
     def show_info(self, title, msg):
@@ -647,15 +764,22 @@ class MainWindow(QMainWindow):
             productos = self.pos.obtener_productos(categoria)
             
         row, col, max_cols = 0, 0, 4
+        self.product_buttons.clear()
         for p in productos:
-            btn = QPushButton(f"{p.nombre}\n$ {p.precio_actual:,.2f}\nStock: {p.stock_local}")
+            # Use live API stock if available, else fall back to local DB value
+            live_stock = self._live_stock_cache.get(p.id_producto, p.stock_local)
+            btn = QPushButton(f"{p.nombre}\n$ {p.precio_actual:,.2f}\nStock: {live_stock}")
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             btn.setStyleSheet("background-color: #1e293b; color: #f8fafc; border: 1px solid #38bdf8; border-radius: 8px; padding: 10px; font-weight: bold; min-height: 80px;")
             btn.clicked.connect(lambda checked, prod=p, button=btn: self.agregar_a_tabla(prod, button))
             self.prod_layout.addWidget(btn, row, col)
+            self.product_buttons[p.id_producto] = (btn, p.nombre, float(p.precio_actual))
             col += 1
             if col >= max_cols:
                 col = 0; row += 1
+        # Only request a fresh stock update when we have a valid auth token
+        if self.sincronizador.token:
+            self.request_stock_update()
 
     def build_category_filters(self, categorias):
         for i in reversed(range(self.cat_layout.count())): 
@@ -687,22 +811,33 @@ class MainWindow(QMainWindow):
 
 
     def do_login(self):
-            u_id = self.u.text()
-            clave = self.p.text()
-            
-
-            if self.pos.login(u_id, clave): 
-
-                auth_ok, msg = self.sincronizador.autenticar(u_id, clave)
+        identificador = self.u.text()
+        clave = self.p.text()
+        
+        from services.auth_service import AuthService
+        
+        exito, mensaje = AuthService.login_maestro(identificador, clave)
+        
+        if exito:
+            # Always try to acquire an API token for background sync,
+            # regardless of whether the user logged in via API or local fallback.
+            # AuthService.token is only set when the API is up — sincronizador needs it too.
+            if AuthService.token:
+                # API login succeeded — reuse the same token directly
+                self.sincronizador.token = AuthService.token
+            else:
+                # Local fallback login — try to get a fresh API token separately
+                auth_ok, _ = self.sincronizador.autenticar(identificador, clave)
                 if not auth_ok:
-                    print(f"⚠️ Offline Mode or Auth Error: {msg}. Continuing with local cache.")
-                
-                if not self.sync_timer.isActive():
-                    self.sync_timer.start(5000)
-                
-                self.stack.setCurrentIndex(1)
-            else: 
-                self.show_error("Access Denied", "Incorrect credentials or inactive user.")
+                    print("[Login] WARNING: API unreachable — stock sync will be disabled until API comes back.", flush=True)
+
+            if not self.sync_timer.isActive():
+                self.sync_timer.start(5000)
+            if hasattr(self, 'stock_timer') and not self.stock_timer.isActive():
+                self.stock_timer.start(5000)
+            self.stack.setCurrentIndex(1)
+        else: 
+            self.show_error("Access Denied", mensaje)
 
     def do_apertura(self):
         if self.pos.abrir_turno(self.f.text()):
@@ -867,16 +1002,40 @@ class MainWindow(QMainWindow):
         monto_fisico, ok = QInputDialog.getText(self, "Register Close (Z)", "Enter the total physical amount counted in the drawer ($):")
         if ok and monto_fisico:
             try:
+                # 1. Generate audit report BEFORE closing (needs active turno data)
+                report_path = None
+                try:
+                    report_path, expected_cash, disc = self.pos.generar_reporte_cuadre(monto_fisico)
+                except Exception as rep_err:
+                    print(f"⚠️ Could not generate shift report: {rep_err}", flush=True)
+
+                # 2. Close the register shift
                 esperado, descuadre = self.pos.cerrar_turno(monto_fisico)
+
+                # 3. Build rich summary
+                report_line = ""
+                if report_path:
+                    import os
+                    report_line = f"\n📄 Audit Report saved to:\n{os.path.basename(report_path)}\n(in ShiftReports/ folder)\n"
+
+                disc_symbol = "🟢" if descuadre == 0 else "🔴"
                 reporte = (
                     f"--- Z CLOSE REPORT ---\n\n"
                     f"Expected Amount in System: $ {esperado:,.2f}\n"
                     f"Declared Physical Amount: $ {float(monto_fisico):,.2f}\n"
-                    f"Discrepancy Detected: $ {descuadre:,.2f}\n\n"
+                    f"{disc_symbol} Discrepancy Detected: $ {descuadre:,.2f}\n"
+                    f"{report_line}\n"
                     f"The turn has been securely closed."
                 )
                 self.show_info("Close Completed", reporte)
-                
+
+                # 4. Try to open the report automatically
+                if report_path:
+                    try:
+                        os.startfile(report_path)
+                    except Exception:
+                        pass  # Non-critical — user can open manually
+
                 self.ventas_turno = 0.0; self.fondo_inicial = 0.0
                 self.u.clear(); self.p.clear(); self.f.clear()
                 self.stack.setCurrentIndex(0)
@@ -935,6 +1094,18 @@ class MainWindow(QMainWindow):
 
     def auto_sync(self):
         self._auto_sync_counter += 1
+
+        # If the API was down at login time, retry token acquisition silently.
+        # AuthService caches the last credentials so we can re-auth when API recovers.
+        if not self.sincronizador.token:
+            from services.auth_service import AuthService
+            cached_id = getattr(AuthService, '_last_identificador', None)
+            cached_pw = getattr(AuthService, '_last_password', None)
+            if cached_id and cached_pw:
+                ok, _ = self.sincronizador.autenticar(cached_id, cached_pw)
+                if ok:
+                    print("[AutoSync] API token acquired on retry — stock sync enabled.", flush=True)
+
         fetch = (self._auto_sync_counter % 6 == 0)
         do_full = (self._auto_sync_counter == 1 or self._auto_sync_counter % 60 == 0)
         self._start_sync(self._on_auto_sync_done, fetch_pedidos=fetch, full_sync=do_full)
@@ -944,17 +1115,10 @@ class MainWindow(QMainWindow):
             self.build_category_filters(categorias)
         if pedidos and self._mesas_dialog and self._mesas_dialog.isVisible():
             self._mesas_dialog.populate_from_data(pedidos)
-        
-        if hasattr(self, 'search') and not self.search.text():
-            self.load_catalog()
+        # NOTE: Do NOT call load_catalog() here — that destroys product_buttons
+        # and races with _on_stock_result, so stock labels never update.
+        # The stock_timer's request_stock_update() handles button label refresh
+        # independently every 5 s without rebuilding the whole catalog.
 
     def closeEvent(self, event):
-        try:
-            if hasattr(self, '_sync_thread') and self._sync_thread.isRunning():
-                self._sync_thread.quit()
-                self._sync_thread.wait(2000)
-            if hasattr(self, '_mesas_dialog') and self._mesas_dialog:
-                self._mesas_dialog.cleanup_thread()
-        except:
-            pass
-        super().closeEvent(event)
+        self._cleanup_and_close(event)

@@ -62,11 +62,12 @@ class POSService:
         finally:
             db.close()
     def abrir_turno(self, monto):
+        from services.auth_service import AuthService
         try:
             with transaction_scope() as db:
                 nuevo = TurnoCaja(
-                    id_usuario=POSService.active_user.id_usuario,
-                    id_sucursal=POSService.active_user.id_sucursal,
+                    id_usuario=AuthService.current_user_id,
+                    id_sucursal=AuthService.current_sucursal_id,
                     monto_inicial=Decimal(str(monto)),
                     estado='ABIERTO'
                 )
@@ -76,7 +77,7 @@ class POSService:
                 POSService.log_system_event("INFO", "POSService.abrir_turno", f"Opened register shift, Initial $ {monto}")
             return True
         except Exception as e:
-            POSService.log_system_event("ERROR", "POSService.abrir_turno", f"Error opening register shift", e)
+            POSService.log_system_event("ERROR", "POSService.abrir_turno", f"Error opening register shift: {e}", e)
             return False
 
     def cerrar_turno(self, monto_fisico):
@@ -101,6 +102,120 @@ class POSService:
             raise e
         finally: db.close()
 
+    def generar_reporte_cuadre(self, monto_fisico):
+        """Generate the full Shift Reconciliation & Audit Report (Cuadre de Caja).
+        Must be called BEFORE the turno object is cleared from memory.
+        Returns (report_path, expected, discrepancy) or raises on error.
+        """
+        from services.report_service import generate_shift_report
+        from collections import defaultdict
+
+        from services.auth_service import AuthService
+        turno = POSService.active_turno
+        user_name = AuthService.current_user_name
+        db = SessionLocal()
+        try:
+            facturas = db.query(FacturaLocal).filter_by(id_turno=turno.id_turno).all()
+
+            # ----- Shift Info -----
+            open_time = turno.fecha_apertura or datetime.datetime.now()
+            close_time = turno.fecha_cierre or datetime.datetime.now()
+            duration = close_time - open_time
+            hours, remainder = divmod(int(duration.total_seconds()), 3600)
+            mins, secs = divmod(remainder, 60)
+            duration_str = f"{hours}h {mins}m {secs}s"
+
+            shift_info = {
+                "employee_name": user_name if user_name else "Unknown",
+                "shift_id": str(turno.id_turno)[:13],
+                "terminal": "POS-01",
+                "branch_id": str(turno.id_sucursal),
+                "open_time": open_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "close_time": close_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "duration": duration_str,
+            }
+
+            # ----- Sales Summary by Payment Method -----
+            sales_by_method = defaultdict(lambda: {"count": 0, "total": 0.0})
+            for f in facturas:
+                method = f.metodo_pago or "UNKNOWN"
+                sales_by_method[method]["count"] += 1
+                sales_by_method[method]["total"] += float(f.total_general or 0)
+            sales_summary = dict(sales_by_method)
+
+            # ----- Cash Flow -----
+            cash_sales = float(sales_by_method.get("EFECTIVO", {}).get("total", 0))
+            starting_float = float(turno.monto_inicial or 0)
+            cash_out = 0.0  # No withdrawals tracked currently
+            expected_cash = starting_float + cash_sales - cash_out
+            actual_cash = float(monto_fisico)
+            discrepancy = actual_cash - expected_cash
+
+            cash_flow = {
+                "starting_float": starting_float,
+                "cash_sales": cash_sales,
+                "cash_out": cash_out,
+                "expected_cash": expected_cash,
+                "actual_cash": actual_cash,
+                "discrepancy": discrepancy,
+            }
+
+            # ----- Financials -----
+            gross_subtotal = sum(float(f.subtotal or 0) for f in facturas)
+            total_itbis = sum(float(f.total_impuestos or 0) for f in facturas)
+            total_legal_tip = sum(float(f.propina_legal or 0) for f in facturas)
+            total_extra_tip = sum(float(getattr(f, 'propina_extra', 0) or 0) for f in facturas)
+            net_total = sum(float(f.total_general or 0) for f in facturas)
+
+            financials = {
+                "gross_subtotal": gross_subtotal,
+                "itbis": total_itbis,
+                "legal_tip": total_legal_tip,
+                "extra_tip": total_extra_tip,
+                "net_total": net_total,
+            }
+
+            # ----- Transactions -----
+            transactions = []
+            for f in facturas:
+                detalles = db.query(DetalleFactura).filter_by(id_factura=f.id_factura).all()
+                items_parts = []
+                for d in detalles:
+                    prod = db.query(ProductoLocal).filter_by(id_producto=d.id_producto).first()
+                    name = prod.nombre if prod else f"PID-{d.id_producto}"
+                    items_parts.append(f"{d.cantidad}x {name}")
+                items_summary = ", ".join(items_parts) if items_parts else "—"
+
+                tx_time = f.fecha_hora.strftime("%H:%M:%S") if f.fecha_hora else "—"
+                transactions.append({
+                    "time": tx_time,
+                    "invoice_id": str(f.id_factura),
+                    "items_summary": items_summary,
+                    "payment_method": f.metodo_pago or "—",
+                    "total": float(f.total_general or 0),
+                })
+
+            shift_data = {
+                "shift_info": shift_info,
+                "cash_flow": cash_flow,
+                "sales_summary": sales_summary,
+                "financials": financials,
+                "transactions": transactions,
+            }
+
+            report_path = generate_shift_report(shift_data)
+            POSService.log_system_event(
+                "INFO", "POSService.generar_reporte_cuadre",
+                f"Shift report generated: {report_path}"
+            )
+            return report_path, expected_cash, discrepancy
+        except Exception as e:
+            POSService.log_system_event("ERROR", "POSService.generar_reporte_cuadre",
+                                        "Failed to generate shift report", e)
+            raise e
+        finally:
+            db.close()
+
     def buscar_producto(self, termino):
         db = SessionLocal()
         try:
@@ -111,6 +226,17 @@ class POSService:
             # Si son letras, buscamos por Nombre (como estaba antes)
             return db.query(ProductoLocal).filter(ProductoLocal.nombre.contains(termino)).all()
         finally: 
+            db.close()
+
+    def obtener_categorias(self):
+        db = SessionLocal()
+        try:
+            from models.entities import CategoriaLocal
+            cats = db.query(CategoriaLocal).filter_by(activo=True).all()
+            return [{"id": c.id, "nombre": c.nombre} for c in cats]
+        except Exception as e:
+            return []
+        finally:
             db.close()
 
     def obtener_productos(self, categoria=None):
@@ -155,8 +281,8 @@ class POSService:
                 # Flexible key mapping
                 id_prod = (item.get("id_producto") or item.get("producto_id") or
                            item.get("id") or item.get("product_id"))
-                cantidad = int(item.get("cantidad") or item.get("qty") or item.get("quantity") or 1)
-                precio_override = item.get("precio_unitario") or item.get("precio") or item.get("price")
+                cantidad = int(item.get("cantidad") or item.get("cant") or item.get("qty") or 1)
+                precio_override = item.get("precio_unitario") or item.get("precio_unitario_historico") or item.get("precio") or item.get("price")
 
                 if not id_prod:
                     warnings.append(f"Skipped item with no product ID: {item}")
@@ -215,7 +341,7 @@ class POSService:
                 factura = FacturaLocal(
                     id_factura=import_uuid if import_uuid else None,
                     id_turno=POSService.active_turno.id_turno,
-                    id_sucursal=POSService.active_user.id_sucursal,
+                    id_sucursal=AuthService.current_sucursal_id,
                     subtotal=sub,
                     total_impuestos=imp,
                     propina_legal=prop_legal,
@@ -263,8 +389,11 @@ class POSService:
                     })
                 
                 pedido_payload = {
+                    "empleado_id": AuthService.current_user_id,
+                    "canal_origen": "MOVIL" if import_uuid else "CAJA",
                     "factura_local_uuid": str(factura.id_factura),
                     "mesa": None,
+                    "cliente_id": None, 
                     "subtotal": float(sub),
                     "total_impuestos": float(imp),
                     "propina_legal": float(prop_legal),
@@ -276,8 +405,8 @@ class POSService:
                 self.generar_ticket_pdf(factura, carrito, efec, ncf_tipo, ncf_num, notas, cliente)
 
                 log_data = f"Factura:{factura.id_factura} | Cliente:{cliente} | Notas:{notas} | NCF:{ncf_num} | Pago:{metodo} | Origen:{'REMOTO' if import_uuid else 'LOCAL'}"
-                log = LogCaja(id_usuario=POSService.active_user.id_usuario,
-                              id_sucursal=POSService.active_user.id_sucursal,
+                log = LogCaja(id_usuario=AuthService.current_user_id,
+                              id_sucursal=AuthService.current_sucursal_id,
                               nivel="INFO", accion="VENTA_FISCAL", descripcion=log_data)
                 db.add(log)
 
@@ -289,18 +418,12 @@ class POSService:
                     POSService.log_system_event("WARNING", "POSService.procesar_venta",
                                                f"Could not notify CORE for {import_uuid}: {msg}")
             elif not import_uuid and sincronizador:
+                # crear_pedido handles both POST /pedidos/ + POST /pedidos/{uuid}/facturar internally.
                 ok, msg = sincronizador.crear_pedido(pedido_payload)
                 if not ok:
-                    print(f"⚠️ CORE order sync failed: {msg}", flush=True)
+                    print(f"⚠️ CORE order create/bill failed: {msg}", flush=True)
                     POSService.log_system_event("WARNING", "POSService.procesar_venta",
-                                               f"Could not create order in CORE: {msg}")
-                else:
-                    factura_id_str = str(factura.id_factura)
-                    ok2, msg2 = sincronizador.notificar_facturacion_remota(factura_id_str)
-                    if not ok2:
-                        print(f"⚠️ CORE order billing failed: {msg2}", flush=True)
-                        POSService.log_system_event("WARNING", "POSService.procesar_venta",
-                                                   f"Could not bill newly created order in CORE: {msg2}")
+                                               f"Could not create/bill order in CORE: {msg}")
 
             self.current_import_uuid = None  # Reset after successful billing
             return float(efec - total), "Successful Sale"
