@@ -27,7 +27,7 @@ class AuthService:
         
         try:
 
-            response = requests.post(url, data=payload, timeout=3.0) 
+            response = requests.post(url, data=payload, timeout=15.0) 
             
             if response.status_code == 200:
                 data = response.json()
@@ -37,11 +37,35 @@ class AuthService:
                 cls.current_rol = data.get("rol", "Cajero")
                 cls.current_sucursal_id = data.get("sucursal_id", 1)
                 
+                # Upsert user to prevent FK violation when opening shift
+                try:
+                    db = SessionLocal()
+                    user = db.query(UsuarioLocal).filter_by(id_usuario=cls.current_user_id).first()
+                    if not user:
+                        user = UsuarioLocal(
+                            id_usuario=cls.current_user_id,
+                            nombre=cls.current_user_name,
+                            hash_clave="remote_auth",
+                            id_sucursal=cls.current_sucursal_id,
+                            email=identificador.strip(),
+                            activo=True
+                        )
+                        db.add(user)
+                    else:
+                        user.nombre = cls.current_user_name
+                        user.id_sucursal = cls.current_sucursal_id
+                    db.commit()
+                    db.close()
+                except Exception as db_err:
+                    print(f"⚠️ Could not upsert user to local DB: {db_err}")
+
                 SyncService._log("INFO", "AuthService", f"Successful login via Integration: {identificador}")
                 return True, "Successful login via Integration"
             
 
             err_msg = response.json().get("detail", "Invalid Credentials")
+            if "credenciales incorrectas" in err_msg.lower() or "credenciales" in err_msg.lower():
+                err_msg = "Invalid credentials."
             SyncService._log("WARNING", "AuthService", f"Login API Rechazado: {err_msg}")
             return False, err_msg
             
@@ -62,6 +86,9 @@ class AuthService:
 
             if not getattr(user, 'activo', True):
                 return False, "User is inactive."
+
+            if user.hash_clave == "remote_auth":
+                return False, "API unreachable. Cannot perform local fallback login for remote user."
 
             try:
                 if bcrypt.checkpw(password.encode('utf-8'), user.hash_clave.encode('utf-8')):

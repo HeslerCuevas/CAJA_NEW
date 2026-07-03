@@ -255,9 +255,46 @@ class POSService:
         finally:
             db.close()
 
-    def calcular_totales(self, carrito, propina_extra=0):
-        sub = sum(Decimal(str(i['precio'])) * i['cant'] for i in carrito)
-        imp = sum((Decimal(str(i['precio'])) * Decimal(str(i['tasa']))) * i['cant'] for i in carrito)
+    def calcular_totales(self, carrito, propina_extra=0, global_discount_pct=0.0, happy_hour_active=False):
+        auto_promos = self.obtener_promociones_automaticas_activas()
+        sub = Decimal("0")
+        imp = Decimal("0")
+        
+        for i in carrito:
+            precio_base = float(i['precio'])
+            prod_id = i.get('id_producto') or i.get('id')
+            cat_id = i.get('id_categoria')
+            
+            if cat_id is None and prod_id is not None:
+                from db.connection import SessionLocal
+                from models.entities import ProductoLocal
+                db = SessionLocal()
+                try:
+                    p = db.query(ProductoLocal).filter_by(id_producto=prod_id).first()
+                    if p:
+                        cat_id = p.id_categoria
+                        i['id_categoria'] = cat_id
+                finally:
+                    db.close()
+            
+            nuevo_precio, _ = self.evaluar_precio_producto(
+                producto_id=prod_id,
+                categoria_id=cat_id,
+                precio_base=precio_base,
+                auto_promos=auto_promos,
+                happy_hour_active=happy_hour_active
+            )
+            
+            if global_discount_pct > 0:
+                global_precio = precio_base * (1 - float(global_discount_pct))
+                nuevo_precio = min(nuevo_precio, global_precio)
+                
+            precio_final = Decimal(str(nuevo_precio))
+            i['precio_final'] = float(precio_final)
+
+            sub += precio_final * i['cant']
+            imp += (precio_final * Decimal(str(i['tasa']))) * i['cant']
+            
         propina_legal = sub * Decimal("0.10")
         try:
             extra = Decimal(str(propina_extra)) if propina_extra else Decimal("0")
@@ -585,3 +622,95 @@ class POSService:
         except Exception as e:
             POSService.log_system_event("ERROR", "POSService.generar_ticket_pdf", "Could not generate PDF invoice ticket", e)
             print(f"❌ Fatal PDF Error: {str(e)}")
+    def obtener_promociones_automaticas_activas(self) -> list:
+        import json, os
+        json_path = os.path.join(os.path.dirname(__file__), '..', 'db', 'promociones_catalog.json')
+        if os.path.exists(json_path):
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return [p for p in data if p.get('activo') and p.get('tipo_aplicacion') == 'AUTOMATICA']
+        return []
+
+    def evaluar_precio_producto(self, producto_id: int, categoria_id: int, precio_base: float, auto_promos: list, happy_hour_active: bool) -> tuple:
+        from decimal import Decimal
+        nuevo_precio = float(precio_base)
+        promos_aplicadas = []
+        
+        for promo in sorted(auto_promos, key=lambda x: x.get('prioridad', 0), reverse=True):
+            if promo.get('aplica_happy_hour') and not happy_hour_active:
+                continue
+            
+            aplica = False
+            aplica_a = promo.get('aplica_a')
+            if aplica_a == 'TODOS':
+                aplica = True
+            elif aplica_a in ('CATEGORIA', 'CATEGORIAS') and categoria_id is not None:
+                aplica = False 
+                if 'categoria_ids' in promo and isinstance(promo['categoria_ids'], list):
+                    if categoria_id in promo['categoria_ids']:
+                        aplica = True
+                elif 'id_aplicacion' in promo and promo.get('id_aplicacion') == categoria_id:
+                    aplica = True
+            elif aplica_a in ('PRODUCTO', 'PRODUCTOS') and producto_id is not None:
+                aplica = False
+                if 'producto_ids' in promo and isinstance(promo['producto_ids'], list):
+                    if producto_id in promo['producto_ids']:
+                        aplica = True
+                elif 'id_aplicacion' in promo and promo.get('id_aplicacion') == producto_id:
+                    aplica = True
+
+            if aplica:
+                val = float(promo.get('valor', 0))
+                if promo.get('tipo_descuento') == 'PORCENTAJE':
+                    np = float(precio_base) * (1.0 - (val / 100.0))
+                else:
+                    np = float(precio_base) - val
+                
+                floor = float(promo.get('precio_minimo_final') or 0)
+                if floor > 0 and np < floor:
+                    np = floor
+                    
+                if np < nuevo_precio:
+                    nuevo_precio = max(0, np)
+                    promos_aplicadas.append(promo)
+
+        return nuevo_precio, promos_aplicadas
+
+    def obtener_promociones_elegibilidad(self) -> list:
+        import json, os
+        json_path = os.path.join(os.path.dirname(__file__), '..', 'db', 'promociones_catalog.json')
+        if os.path.exists(json_path):
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return [p for p in data if p.get('activo') and p.get('tipo_aplicacion') == 'ELEGIBILIDAD']
+        return []
+
+    def registrar_aplicacion_promocion(self, nombre_promocion: str, tipo_aplicacion: str, 
+                                     monto_descuento: float, factura_uuid: str = None, 
+                                     promocion_id: int = None, empleado_id: int = None,
+                                     empleado_autorizador_id: int = None,
+                                     identificador_capturado: str = None, notas: str = None):
+        from db.connection import SessionLocal
+        from models.entities import AplicacionPromocionLocal
+        db = SessionLocal()
+        try:
+            ap = AplicacionPromocionLocal(
+                factura_uuid=factura_uuid,
+                promocion_id=promocion_id,
+                nombre_promocion=nombre_promocion,
+                tipo_aplicacion=tipo_aplicacion,
+                empleado_id=empleado_id,
+                empleado_autorizador_id=empleado_autorizador_id,
+                identificador_capturado=identificador_capturado,
+                monto_descuento=monto_descuento,
+                terminal='CAJA_NEW',
+                notas=notas,
+                sincronizado=False
+            )
+            db.add(ap)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            POSService.log_system_event('ERROR', 'PROMO_AUDIT', f'Could not save promo audit: {e}')
+        finally:
+            db.close()

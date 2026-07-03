@@ -164,6 +164,24 @@ class SyncService:
             SyncService._log("ERROR", "SyncService.sincronizar_empleados", "Connection error during employee sync", e)
             return False, str(e)
 
+    def sincronizar_happy_hour(self):
+        url = f"{self.api_base_url}/api/v1/promociones/happy-hour/activo"
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            response = requests.get(url, headers=headers, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                active = data.get("happy_hour_activo", False)
+                discount = 0.0
+                if active and data.get("promociones_activas"):
+                    discount = data["promociones_activas"][0].get("valor", 0.0) / 100.0
+                return active, float(discount)
+            return False, 0.0
+        except Exception:
+            return False, 0.0
+
     def sincronizar_categorias(self):
         url = f"{self.api_base_url}/api/v1/productos/categorias"
         headers = {"Accept": "application/json"}
@@ -458,3 +476,247 @@ class SyncService:
             SyncService._log("ERROR", "SyncService.notificar_facturacion_remota",
                              f"Connection error notifying CORE for {factura_uuid}", e)
             return False, f"Connection error: {str(e)}"
+
+    def get_modificadores_producto(self, producto_id):
+        '''Fetch available modifiers for a product from the CORE API.
+        GET /api/v1/productos/{producto_id}/modificadores
+        Returns a list of modifier name strings, or [] on any failure / 404.
+        '''
+        if not self.token:
+            return []
+        url = f'{self.api_base_url}/api/v1/productos/{producto_id}/modificadores'
+        headers = {'Accept': 'application/json', 'Authorization': f'Bearer {self.token}'}
+        try:
+            response = requests.get(url, headers=headers, timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list):
+                    mods = data
+                elif isinstance(data, dict):
+                    mods = data.get('modificadores') or data.get('modifiers') or data.get('data') or []
+                else:
+                    return []
+                return [str(m.get('nombre') or m.get('name') or m) for m in mods if m]
+            return []
+        except Exception as e:
+            print(f'[Modificadores] Could not fetch modifiers for {producto_id}: {e}', flush=True)
+            return []
+
+    # ── Promotion System Sync ─────────────────────────────────────────────────
+
+    def sincronizar_promociones(self):
+        """Fetch active promotions and store them in the local Cache (PromocionLocal)."""
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        try:
+            url = f"{self.api_base_url}/api/v1/promociones/"
+            response = requests.get(url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                from models.entities import PromocionLocal
+                db = SessionLocal()
+                try:
+                    import datetime
+                    for p in data:
+                        promo = db.query(PromocionLocal).filter(PromocionLocal.id == p.get('id')).first()
+                        if promo:
+                            promo.nombre = p.get('nombre', promo.nombre)
+                            promo.tipo_aplicacion = p.get('tipo_aplicacion', 'AUTOMATICA')
+                            promo.tipo_descuento = p.get('tipo_descuento')
+                            promo.valor = p.get('valor')
+                            promo.aplica_a = p.get('aplica_a', 'TODOS')
+                            promo.aplica_happy_hour = p.get('aplica_happy_hour', False)
+                            promo.hora_inicio_hh = p.get('hora_inicio_hh')
+                            promo.hora_fin_hh = p.get('hora_fin_hh')
+                            promo.fecha_inicio = datetime.datetime.now() # Simplified
+                            promo.activo = p.get('activo', True)
+                            promo.prioridad = p.get('prioridad', 0)
+                            promo.etiqueta_identificador = p.get('etiqueta_identificador')
+                            promo.requiere_identificador = p.get('requiere_identificador', True)
+                        else:
+                            promo = PromocionLocal(
+                                id=p.get('id'),
+                                nombre=p.get('nombre', ''),
+                                tipo_aplicacion=p.get('tipo_aplicacion', 'AUTOMATICA'),
+                                tipo_descuento=p.get('tipo_descuento'),
+                                valor=p.get('valor'),
+                                aplica_a=p.get('aplica_a', 'TODOS'),
+                                aplica_happy_hour=p.get('aplica_happy_hour', False),
+                                hora_inicio_hh=p.get('hora_inicio_hh'),
+                                hora_fin_hh=p.get('hora_fin_hh'),
+                                fecha_inicio=datetime.datetime.now(), # Simplified
+                                fecha_fin=None,
+                                activo=p.get('activo', True),
+                                prioridad=p.get('prioridad', 0),
+                                etiqueta_identificador=p.get('etiqueta_identificador'),
+                                requiere_identificador=p.get('requiere_identificador', True)
+                            )
+                            db.add(promo)
+                    db.commit()
+                    
+                    # Also save full JSON catalog for category/product eligibility
+                    import json
+                    import os
+                    json_path = os.path.join(os.path.dirname(__file__), '..', 'db', 'promociones_catalog.json')
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        json.dump(data, f)
+                        
+                    print(f"[OK] Synced {len(data)} promotions to local cache", flush=True)
+                except Exception as e:
+                    db.rollback()
+                    print(f"[ERROR] DB Error syncing promotions: {e}", flush=True)
+                finally:
+                    db.close()
+                return data
+            return []
+        except Exception as e:
+            print(f"[ERROR] Connection error syncing promotions: {e}", flush=True)
+            return []
+
+    def sincronizar_auditorias_promocion(self):
+        """Upload offline promotion application audits to the Integration Gateway."""
+        from models.entities import AplicacionPromocionLocal
+        db = SessionLocal()
+        
+        try:
+            pendientes = db.query(AplicacionPromocionLocal).filter(
+                AplicacionPromocionLocal.sincronizado == False
+            ).limit(50).all()
+            
+            if not pendientes:
+                return 0
+                
+            url = f"{self.api_base_url}/api/v1/promociones/aplicaciones"
+            headers = {"Accept": "application/json"}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+                
+            procesados = 0
+            for ap in pendientes:
+                payload = {
+                    "factura_uuid": str(ap.factura_uuid) if ap.factura_uuid else None,
+                    "promocion_id": ap.promocion_id,
+                    "nombre_promocion_snap": ap.nombre_promocion,
+                    "tipo_aplicacion": ap.tipo_aplicacion,
+                    "empleado_id": ap.empleado_id,
+                    "empleado_autorizador_id": ap.empleado_autorizador_id,
+                    "identificador_capturado": ap.identificador_capturado,
+                    "monto_descuento": float(ap.monto_descuento),
+                    "terminal": ap.terminal,
+                    "notas": ap.notas
+                }
+                
+                try:
+                    resp = requests.post(url, json=payload, headers=headers, timeout=5)
+                    if resp.status_code in (200, 201):
+                        ap.sincronizado = True
+                        procesados += 1
+                except Exception as e:
+                    print(f"Failed to sync promotion audit {ap.id}: {e}")
+                    
+            db.commit()
+            if procesados > 0:
+                print(f"✅ Uploaded {procesados} promotion audits", flush=True)
+            return procesados
+            
+        finally:
+            db.close()
+
+    def autenticar_supervisor_totp(self, email: str, otp: str) -> dict:
+        """Call the Integration Gateway to authenticate a supervisor using TOTP."""
+        url = f"{self.api_base_url}/api/v1/promociones/supervisor/auth"
+        params = {
+            "email": email,
+            "otp": otp
+        }
+        try:
+            resp = requests.post(url, params=params, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if not data.get("ok"):
+                    raise Exception(data.get("error", "Invalid or expired code."))
+                return data
+            else:
+                try:
+                    msg = resp.json().get("detail", "Invalid or expired code.")
+                except:
+                    msg = "Invalid or expired code."
+                raise Exception(msg)
+        except Exception as e:
+            if "Connection error" in str(e):
+                raise Exception("Connection error.")
+            raise
+
+    def validar_codigo_promo(self, codigo: str, subtotal: float) -> dict:
+        """Validate a promotional code with the Integration Gateway."""
+        url = f"{self.api_base_url}/api/v1/promociones/codigos/validar"
+        params = {
+            "codigo": codigo,
+            "subtotal": subtotal
+        }
+        try:
+            resp = requests.post(url, params=params, timeout=5)
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                try:
+                    msg = resp.json().get("detail", "Code invalid or expired.")
+                except:
+                    msg = "Code invalid or expired."
+                raise Exception(msg)
+        except Exception as e:
+            if "Code invalid" in str(e) or "expired" in str(e) or "Minimum" in str(e) or "No existe" in str(e):
+                raise
+            raise Exception("Connection error verifying code.")
+
+    def sincronizar_sesiones_supervisor(self):
+        """Upload offline supervisor session records to the Integration Gateway."""
+        from models.entities import SupervisorSessionLocal
+        db = SessionLocal()
+        
+        try:
+            pendientes = db.query(SupervisorSessionLocal).filter(
+                SupervisorSessionLocal.sincronizado == False
+            ).limit(50).all()
+            
+            if not pendientes:
+                return 0
+                
+            url = f"{self.api_base_url}/api/v1/promociones/supervisor/sessions/sync"
+            headers = {"Accept": "application/json"}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+                
+            payload = []
+            for s in pendientes:
+                payload.append({
+                    "id": str(s.id),
+                    "supervisor_id": s.supervisor_id,
+                    "cajero_id": s.cajero_id,
+                    "terminal": s.terminal,
+                    "inicio": s.inicio.isoformat() if s.inicio else None,
+                    "fin": s.fin.isoformat() if s.fin else None,
+                    "motivo_fin": s.motivo_fin
+                })
+            
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=5)
+                if resp.status_code in (200, 201):
+                    for s in pendientes:
+                        s.sincronizado = True
+                    db.commit()
+                    print(f"✅ Uploaded {len(pendientes)} supervisor sessions", flush=True)
+                    return len(pendientes)
+                else:
+                    print(f"❌ Failed to sync supervisor sessions: HTTP {resp.status_code}", flush=True)
+            except Exception as e:
+                print(f"❌ Connection error syncing supervisor sessions: {e}", flush=True)
+                
+            return 0
+            
+        finally:
+            db.close()
+
