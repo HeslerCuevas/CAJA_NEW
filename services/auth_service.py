@@ -45,7 +45,7 @@ class AuthService:
                         user = UsuarioLocal(
                             id_usuario=cls.current_user_id,
                             nombre=cls.current_user_name,
-                            hash_clave="remote_auth",
+                            hash_clave=bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8'),
                             id_sucursal=cls.current_sucursal_id,
                             email=identificador.strip(),
                             activo=True
@@ -54,6 +54,7 @@ class AuthService:
                     else:
                         user.nombre = cls.current_user_name
                         user.id_sucursal = cls.current_sucursal_id
+                        user.hash_clave = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                     db.commit()
                     db.close()
                 except Exception as db_err:

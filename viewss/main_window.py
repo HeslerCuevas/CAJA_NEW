@@ -1462,7 +1462,7 @@ class SplitBillDialog(QDialog):
         self.hh_discount = happy_hour_discount
 
         self.sub, self.imp, self.prop_legal, self.total = pos_service.calcular_totales(
-            carrito, happy_hour_discount=happy_hour_discount
+            carrito, global_discount_pct=happy_hour_discount
         )
 
         # Equal split state
@@ -2221,7 +2221,14 @@ class SplitBillDialog(QDialog):
             self.btn_pay.setText("Process Custom Payments")
             self.btn_pay.setEnabled(abs(remaining) < 0.01 and all_filled)
 
+    def _on_pay_click(self):
+        if self._current_mode == 0:
+            self._eq_pay_guest(self._eq_selected)
+        elif self._current_mode == 2:
+            self._cu_confirm_all()
+
     # ── Payments ─────────────────────────────────────────────────────────────
+    def _eq_pay_guest(self, g_idx):
         if g_idx in self._eq_paid:
             return
 
@@ -2930,7 +2937,7 @@ class PromotionsDialog(QDialog):
                 row = QHBoxLayout()
                 nm = _lbl(ap['nombre'])
                 nm.setStyleSheet(f"color:{CLR_TEXT};font-weight:600;font-size:13px;background:transparent;")
-                val_str = f"{int(ap['valor'])}%" if ap['tipo_descuento'] == 'PORCENTAJE' else money(ap['valor'])
+                val_str = f"{int(float(ap['valor']))}%" if ap['tipo_descuento'] == 'PORCENTAJE' else money(ap['valor'])
                 if ap.get('aplica_happy_hour'):
                     val_str += f"  •  {ap.get('hora_inicio_hh','')}–{ap.get('hora_fin_hh','')}"
                 vl = _lbl(val_str)
@@ -3842,10 +3849,23 @@ class MainWindow(QMainWindow):
         else:
             productos = self.pos.obtener_productos(categoria)
 
-        row, col, MAX_COLS = 0, 0, 5
+        # Clear existing stretches
+        for i in range(self.prod_layout.rowCount()):
+            self.prod_layout.setRowStretch(i, 0)
+        for i in range(self.prod_layout.columnCount()):
+            self.prod_layout.setColumnStretch(i, 0)
+
+        num_prods = len(productos)
+        # Dynamic column count: min(count, 5) so the grid always fills perfectly.
+        # 1 product -> 1 col (full grid), 3 -> 3 cols (full height), 4 -> 4 cols, 5+ -> 5 cols.
+        MAX_COLS = 5
+        cols = min(num_prods, MAX_COLS) if num_prods > 0 else MAX_COLS
+
+        row, col = 0, 0
         self.product_buttons.clear()
         in_cooldown = time.monotonic() < self._stock_cooldown_until
-        
+        buttons_placed = []  # (btn, grid_row, grid_col)
+
         # Load active auto promos for display
         auto_promos = self.pos.obtener_promociones_automaticas_activas()
 
@@ -3881,20 +3901,47 @@ class MainWindow(QMainWindow):
             
             btn.setObjectName("BtnProductPromo" if nuevo_precio < float(p.precio_actual) else "BtnProduct")
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            btn.setMinimumHeight(110)
+
             btn.clicked.connect(
                 lambda checked, prod=p, button=btn: self.agregar_a_tabla(prod, button)
             )
             self.prod_layout.addWidget(btn, row, col)
+            buttons_placed.append((btn, row, col))
             self.product_buttons[p.id_producto] = (btn, p.nombre, float(p.precio_actual), nuevo_precio, discount_str)
             col += 1
-            if col >= MAX_COLS:
+            if col >= cols:
                 col = 0
                 row += 1
+
+        # If the last row is incomplete, span its items evenly so no empty cells steal space.
+        if num_prods > 0 and col > 0:
+            items_in_last_row = col
+            span_base = cols // items_in_last_row
+            remainder = cols % items_in_last_row
+            last_row_start = len(buttons_placed) - items_in_last_row
+            c_offset = 0
+            for i, (btn, r, _) in enumerate(buttons_placed[last_row_start:]):
+                self.prod_layout.removeWidget(btn)
+                this_span = span_base + (1 if i < remainder else 0)
+                self.prod_layout.addWidget(btn, r, c_offset, 1, this_span)
+                c_offset += this_span
+
+        # Equal stretch on all used rows and columns so items fill the full viewport.
+        total_rows = row + 1 if col > 0 else row
+        for r in range(total_rows):
+            self.prod_layout.setRowStretch(r, 1)
+        for c in range(cols):
+            self.prod_layout.setColumnStretch(c, 1)
 
         if self.sincronizador.token:
             self.request_stock_update()
 
     def build_category_filters(self, categorias):
+        active_cat_name = None
+        if hasattr(self, '_active_cat_btn') and self._active_cat_btn and self._active_cat_btn.text() != "ALL":
+            active_cat_name = self._active_cat_btn.text()
+
         while self.cat_layout.count():
             item = self.cat_layout.takeAt(0)
             if item.widget():
@@ -3908,6 +3955,9 @@ class MainWindow(QMainWindow):
         self.cat_layout.addWidget(btn_all)
         self._active_cat_btn = btn_all
 
+        target_btn = None
+        target_name = None
+
         for c in categorias:
             cat_name = c.get("nombre") if isinstance(c, dict) else str(c)
             btn = QPushButton(cat_name)
@@ -3916,8 +3966,20 @@ class MainWindow(QMainWindow):
                 lambda checked, cat=cat_name, b=btn: self._set_category(cat, b)
             )
             self.cat_layout.addWidget(btn)
+            if active_cat_name and cat_name == active_cat_name:
+                target_btn = btn
+                target_name = cat_name
 
         self.cat_layout.addStretch()
+
+        if target_btn:
+            self._active_cat_btn.setStyleSheet("")
+            self._active_cat_btn.setObjectName("BtnCat")
+            self._active_cat_btn.style().unpolish(self._active_cat_btn)
+            self._active_cat_btn.style().polish(self._active_cat_btn)
+
+            target_btn.setStyleSheet(f"background-color: {CLR_CHAMPAGNE}; color: {CLR_BG}; border: 1px solid {CLR_CHAMPAGNE}; border-radius: 20px; font-weight: 700;")
+            self._active_cat_btn = target_btn
 
     def _set_category(self, cat_name, btn):
         if hasattr(self, '_active_cat_btn') and self._active_cat_btn:
@@ -4403,7 +4465,15 @@ class MainWindow(QMainWindow):
             self.show_error("Access Denied", mensaje)
 
     def do_apertura(self):
-        if self.pos.abrir_turno(self.f.text()):
+        try:
+            monto = float(self.f.text().strip())
+            if monto < 0:
+                raise ValueError
+        except ValueError:
+            self.show_warning("Error", "Please enter a valid positive initial amount (Ex: 1500.50).")
+            return
+
+        if self.pos.abrir_turno(str(monto)):
             self.fondo_inicial = float(self.pos.active_turno.monto_inicial)
             self.ventas_turno  = 0.0
             self.actualizar_visor_caja()
@@ -4564,7 +4634,10 @@ class MainWindow(QMainWindow):
         
         # Refresh product grid and cart in case prices or promos changed
         if hasattr(self, 'search') and not self.search.text():
-            self.load_catalog()
+            active_cat = None
+            if hasattr(self, '_active_cat_btn') and self._active_cat_btn and self._active_cat_btn.text() != "ALL":
+                active_cat = self._active_cat_btn.text()
+            self.load_catalog(categoria=active_cat)
         self.actualizar_tabla()
         self.update_totals()
         
@@ -4598,7 +4671,10 @@ class MainWindow(QMainWindow):
             
         # Refresh product grid and cart in case prices or promos changed
         if hasattr(self, 'search') and not self.search.text():
-            self.load_catalog()
+            active_cat = None
+            if hasattr(self, '_active_cat_btn') and self._active_cat_btn and self._active_cat_btn.text() != "ALL":
+                active_cat = self._active_cat_btn.text()
+            self.load_catalog(categoria=active_cat)
         self.update_totals()
 
     def _activate_stock_cooldown(self):

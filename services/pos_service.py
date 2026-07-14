@@ -623,12 +623,25 @@ class POSService:
             POSService.log_system_event("ERROR", "POSService.generar_ticket_pdf", "Could not generate PDF invoice ticket", e)
             print(f"❌ Fatal PDF Error: {str(e)}")
     def obtener_promociones_automaticas_activas(self) -> list:
-        import json, os
+        import json, os, datetime
         json_path = os.path.join(os.path.dirname(__file__), '..', 'db', 'promociones_catalog.json')
         if os.path.exists(json_path):
             with open(json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                return [p for p in data if p.get('activo') and p.get('tipo_aplicacion') == 'AUTOMATICA']
+                valid_promos = []
+                now = datetime.datetime.now()
+                for p in data:
+                    if p.get('activo') and p.get('tipo_aplicacion') == 'AUTOMATICA':
+                        fecha_fin_str = p.get('fecha_fin')
+                        if fecha_fin_str:
+                            try:
+                                fecha_fin = datetime.datetime.fromisoformat(fecha_fin_str)
+                                if now > fecha_fin:
+                                    continue
+                            except ValueError:
+                                pass
+                        valid_promos.append(p)
+                return valid_promos
         return []
 
     def evaluar_precio_producto(self, producto_id: int, categoria_id: int, precio_base: float, auto_promos: list, happy_hour_active: bool) -> tuple:
@@ -677,12 +690,25 @@ class POSService:
         return nuevo_precio, promos_aplicadas
 
     def obtener_promociones_elegibilidad(self) -> list:
-        import json, os
+        import json, os, datetime
         json_path = os.path.join(os.path.dirname(__file__), '..', 'db', 'promociones_catalog.json')
         if os.path.exists(json_path):
             with open(json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                return [p for p in data if p.get('activo') and p.get('tipo_aplicacion') == 'ELEGIBILIDAD']
+                valid_promos = []
+                now = datetime.datetime.now()
+                for p in data:
+                    if p.get('activo') and p.get('tipo_aplicacion') == 'ELEGIBILIDAD':
+                        fecha_fin_str = p.get('fecha_fin')
+                        if fecha_fin_str:
+                            try:
+                                fecha_fin = datetime.datetime.fromisoformat(fecha_fin_str)
+                                if now > fecha_fin:
+                                    continue
+                            except ValueError:
+                                pass
+                        valid_promos.append(p)
+                return valid_promos
         return []
 
     def registrar_aplicacion_promocion(self, nombre_promocion: str, tipo_aplicacion: str, 
@@ -714,3 +740,7 @@ class POSService:
             POSService.log_system_event('ERROR', 'PROMO_AUDIT', f'Could not save promo audit: {e}')
         finally:
             db.close()
+
+    def obtener_modificadores_producto(self, producto_id, sincronizador=None):
+        """Returns a generic list of modifiers since no remote modifiers exist."""
+        return ["Sin Hielo", "Poco Hielo", "Extra Fuerte", "Con Limon", "Para Llevar", "Sin Sal", "Extra Azucar"]
