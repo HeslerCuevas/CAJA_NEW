@@ -23,7 +23,7 @@ class SyncService:
         url = f"{self.api_base_url}/api/v1/auth/login"
         payload = {"username": identificador.strip(), "password": password.strip()}
         try:
-            response = requests.post(url, data=payload, timeout=10)
+            response = requests.post(url, data=payload, timeout=3.0)
             if response.status_code == 200:
                 self.token = response.json().get("access_token")
                 SyncService._log("INFO", "SyncService.autenticar", f"Successfully authenticated user '{identificador}'")
@@ -288,7 +288,24 @@ class SyncService:
                         cat_id = prod.get("categoria_id") or prod.get("id_categoria") or prod.get("Id_Categoria")
                         if cat_id is not None:
                             p.id_categoria = int(cat_id)
-                        
+
+                        # Download and store product image
+                        image_url = prod.get("imagen_url") or prod.get("image_url") or prod.get("imagen")
+                        if image_url:
+                            try:
+                                import os
+                                images_dir = os.path.join(os.path.dirname(__file__), '..', 'images')
+                                os.makedirs(images_dir, exist_ok=True)
+                                img_path = os.path.join(images_dir, f"product_{prod_id}.jpg")
+                                
+                                # Only download if we don't have it or we want to overwrite
+                                img_resp = requests.get(image_url, timeout=5)
+                                if img_resp.status_code == 200:
+                                    with open(img_path, 'wb') as f:
+                                        f.write(img_resp.content)
+                            except Exception as img_e:
+                                print(f"⚠️ Failed to download image for product {prod_id}: {img_e}", flush=True)
+
                         saved += 1
                         
                     db.flush()

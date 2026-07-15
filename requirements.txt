@@ -1,1 +1,8 @@
 tzdata
+sqlalchemy
+pyodbc
+bcrypt
+requests
+reportlab
+cryptography
+psutil

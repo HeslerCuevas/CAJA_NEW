@@ -27,7 +27,7 @@ class AuthService:
         
         try:
 
-            response = requests.post(url, data=payload, timeout=15.0) 
+            response = requests.post(url, data=payload, timeout=3.0) 
             
             if response.status_code == 200:
                 data = response.json()

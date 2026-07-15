@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QScrollBar
 )
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, Slot, QObject, QSize
-from PySide6.QtGui import QColor, QBrush, QFont, QPalette, QCursor
+from PySide6.QtGui import QColor, QBrush, QFont, QPalette, QCursor, QPixmap
 from services.pos_service import POSService
 from services.sync_service import SyncService
 from utils.money import money, rich_money
@@ -192,14 +192,15 @@ QPushButton:disabled {{
     border-color: rgba(255,255,255,0.04);
 }}
 
-/* Primary / Success (Ember orange) */
+/* Primary / Success (High Contrast CTA) */
 QPushButton#BtnSuccess, QPushButton#BtnPrimary {{
     background-color: {CLR_EMBER};
-    color: {CLR_BG};
+    color: #111111;
     border: none;
     font-size: 15px;
     font-weight: 900;
     border-radius: 12px;
+    padding: 12px 24px;
 }}
 QPushButton#BtnSuccess:hover, QPushButton#BtnPrimary:hover {{ background-color: #E56000; }}
 QPushButton#BtnSuccess:disabled, QPushButton#BtnPrimary:disabled {{
@@ -325,43 +326,44 @@ QPushButton#BtnHHActive {{
     font-weight: 800;
 }}
 
-/* Product card — both variants share identical sizing so the grid stays uniform */
+/* Product card — premium card style */
 QPushButton#BtnProduct {{
     background-color: {CLR_SURFACE};
     color: {CLR_TEXT};
     border: 1px solid {CLR_BORDER};
     border-radius: 16px;
-    padding: 12px 10px;
+    padding: 14px 10px 10px 10px;
     font-size: 12px;
     font-family: 'Epilogue', 'Segoe UI', sans-serif;
     text-align: center;
-    min-height: 110px;
-    max-height: 110px;
+    min-height: 120px;
+    max-height: 120px;
 }}
 QPushButton#BtnProduct:hover {{
     background-color: {CLR_SURFACE_HIGH};
-    border-color: rgba(255,107,0,0.4);
+    border: 2px solid rgba(255,107,0,0.45);
     color: {CLR_EMBER};
 }}
-QPushButton#BtnProduct:pressed {{ background-color: rgba(255,107,0,0.12); }}
+QPushButton#BtnProduct:pressed {{ background-color: rgba(255,107,0,0.10); }}
 
 QPushButton#BtnProductPromo {{
-    background-color: rgba(0,180,160,0.12);
-    color: #00B4A0;
-    border: 1px solid rgba(0,180,160,0.4);
+    background-color: rgba(226,180,154,0.07);
+    color: {CLR_CHAMPAGNE};
+    border: 1px solid rgba(226,180,154,0.35);
     border-radius: 16px;
-    padding: 12px 10px;
+    padding: 14px 10px 10px 10px;
     font-size: 12px;
     font-family: 'Epilogue', 'Segoe UI', sans-serif;
     text-align: center;
-    min-height: 110px;
-    max-height: 110px;
+    min-height: 120px;
+    max-height: 120px;
 }}
 QPushButton#BtnProductPromo:hover {{
-    background-color: rgba(0,180,160,0.22);
-    border-color: #00B4A0;
+    background-color: rgba(226,180,154,0.14);
+    border: 2px solid rgba(226,180,154,0.6);
+    color: {CLR_TEXT};
 }}
-QPushButton#BtnProductPromo:pressed {{ background-color: rgba(0,180,160,0.08); }}
+QPushButton#BtnProductPromo:pressed {{ background-color: rgba(226,180,154,0.05); }}
 
 /* Notes button (inactive) */
 QPushButton#BtnNotes {{
@@ -390,6 +392,22 @@ QPushButton#BtnNotesActive {{
     font-weight: 800;
 }}
 QPushButton#BtnNotesActive:hover {{ background-color: #E56000; }}
+
+/* Minus quantity button in cart rows */
+QPushButton#BtnMinusQty {{
+    background-color: rgba(255,76,76,0.10);
+    color: #FF6060;
+    border: 1px solid rgba(255,76,76,0.28);
+    border-radius: 5px;
+    font-size: 15px;
+    font-weight: 900;
+    padding: 0;
+}}
+QPushButton#BtnMinusQty:hover {{
+    background-color: rgba(255,76,76,0.28);
+    border-color: #FF4C4C;
+    color: #FFDAD6;
+}}
 
 /* Modifier chips in dialog */
 QPushButton#BtnModOn {{
@@ -636,32 +654,33 @@ QFrame#HoldRow {{
     border-radius: 12px;
 }}
 
-/* ── Promotions button ── */
+/* ── Promotions button (Soft Contrast Outline) ── */
 QPushButton#BtnPromo {{
-    background-color: rgba(0,180,160,0.12);
-    color: #00B4A0;
-    border: 1px solid rgba(0,180,160,0.4);
+    background-color: rgba(255,107,0,0.05);
+    color: #FFB380;
+    border: 1px solid rgba(255,107,0,0.4);
     border-radius: 10px;
     font-size: 13px;
     font-weight: 800;
-    padding: 8px 14px;
+    padding: 10px 18px;
     letter-spacing: 0.5px;
 }}
 QPushButton#BtnPromo:hover {{
-    background-color: rgba(0,180,160,0.22);
-    border-color: #00B4A0;
+    background-color: rgba(255,107,0,0.15);
+    border-color: {CLR_EMBER};
 }}
 QPushButton#BtnPromoActive {{
-    background-color: #00B4A0;
-    color: {CLR_BG};
-    border: none;
+    background-color: rgba(226,180,154,0.15);
+    color: {CLR_CHAMPAGNE};
+    border: 1px solid {CLR_CHAMPAGNE};
     border-radius: 10px;
     font-size: 13px;
     font-weight: 900;
     padding: 8px 14px;
 }}
 QPushButton#BtnPromoActive:hover {{
-    background-color: #009A8A;
+    background-color: rgba(226,180,154,0.22);
+    border-color: {CLR_CHAMPAGNE};
 }}
 
 /* ── Discount badge chip ── */
@@ -899,7 +918,18 @@ class AppMessageBox(QDialog):
         btn_l = QHBoxLayout()
         btn_l.addStretch()
 
-        if buttons_type == "YES_NO" or buttons_type == "YES_NO_CANCEL":
+        if buttons_type == "YES_NO_NEUTRAL":
+            btn_no = QPushButton("No")
+            btn_no.setObjectName("BtnChampagne")
+            btn_no.setFixedWidth(100)
+            btn_no.clicked.connect(lambda: dlg.done(QMessageBox.No))
+            btn_yes = QPushButton("Yes")
+            btn_yes.setObjectName("BtnChampagne")
+            btn_yes.setFixedWidth(100)
+            btn_yes.clicked.connect(lambda: dlg.done(QMessageBox.Yes))
+            btn_l.addWidget(btn_no)
+            btn_l.addWidget(btn_yes)
+        elif buttons_type == "YES_NO" or buttons_type == "YES_NO_CANCEL":
             if buttons_type == "YES_NO_CANCEL":
                 btn_cancel = QPushButton("Cancel")
                 btn_cancel.setObjectName("BtnChampagne")
@@ -919,6 +949,7 @@ class AppMessageBox(QDialog):
             
             btn_l.addWidget(btn_no)
             btn_l.addWidget(btn_yes)
+
         else:
             btn_ok = QPushButton("OK")
             btn_ok.setObjectName("BtnSuccess")
@@ -1827,9 +1858,17 @@ class SplitBillDialog(QDialog):
                 f"color:{CLR_EMBER};font-weight:800;font-size:14px;background:transparent;"
             )
             g_hdr.addWidget(g_name)
+            if selected and not paid:
+                sel_badge = _lbl("SELECTED")
+                sel_badge.setStyleSheet(
+                    f"color:{CLR_BG};background:{CLR_EMBER};border-radius:4px;"
+                    f"padding:2px 7px;font-size:10px;font-weight:800;letter-spacing:0.5px;"
+                )
+                g_hdr.addWidget(sel_badge)
             g_hdr.addStretch()
             g_hdr.addWidget(g_total_lbl)
             panel_l.addLayout(g_hdr)
+
 
             # Items list
             if guest['items']:
@@ -2464,12 +2503,11 @@ class MesasDialog(QDialog):
         foot_l.setContentsMargins(20, 0, 20, 0)
         btn_refresh = QPushButton("Refresh")
         btn_refresh.setObjectName("BtnChampagne")
-        btn_refresh.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold; border-radius: 6px; font-size: 14px; padding: 8px 16px;")
         btn_refresh.clicked.connect(self.refresh)
-        btn_close = QPushButton("Close")
+        
+        btn_close = QPushButton("Dismiss")
         btn_close.setObjectName("BtnDanger")
         btn_close.setFixedWidth(100)
-        btn_close.setStyleSheet("background-color: #FF4A4A; color: white; font-weight: bold; border-radius: 6px; font-size: 14px; padding: 8px 16px;")
         btn_close.clicked.connect(self.hide)
         foot_l.addWidget(btn_refresh)
         foot_l.addStretch()
@@ -2503,6 +2541,13 @@ class MesasDialog(QDialog):
 
     def _populate(self, pedidos):
         self.table.setRowCount(0)
+        if not pedidos:
+            self.table.insertRow(0)
+            empty_item = QTableWidgetItem("No active tables at this time.")
+            empty_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(0, 0, empty_item)
+            self.table.setSpan(0, 0, 1, 6)
+            return
         for pedido in pedidos:
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -2642,7 +2687,7 @@ class SupervisorAuthDialog(QDialog):
 
         # Header
         hdr = QHBoxLayout()
-        icon_lbl = _lbl("🔐")
+        icon_lbl = _lbl("")
         icon_lbl.setStyleSheet("font-size:24px;background:transparent;")
         title_lbl = _lbl("SUPERVISOR AUTHORIZATION", "LblTitle")
         title_lbl.setStyleSheet(f"color:{CLR_EMBER};font-weight:800;font-size:16px;background:transparent;")
@@ -2669,11 +2714,7 @@ class SupervisorAuthDialog(QDialog):
         action_lbl.setStyleSheet(f"color:{CLR_CHAMPAGNE};font-size:13px;font-weight:600;background:transparent;")
         action_lbl.setWordWrap(True)
         sup_l.addWidget(action_lbl)
-
-        note_lbl = _lbl("The supervisor must be physically present and enter their credentials.")
-        note_lbl.setStyleSheet(f"color:{CLR_TEXT_MID};font-size:12px;background:transparent;")
-        note_lbl.setWordWrap(True)
-        sup_l.addWidget(note_lbl)
+        
         card_l.addWidget(sup_frame)
 
         card_l.addWidget(_lbl("SUPERVISOR EMAIL", "LblMeta"))
@@ -2897,7 +2938,7 @@ class PromotionsDialog(QDialog):
         hdr_l.setSpacing(6)
 
         title_row = QHBoxLayout()
-        icon_lbl = _lbl("🏷️")
+        icon_lbl = _lbl("")
         icon_lbl.setStyleSheet("font-size:20px;background:transparent;")
         title_lbl = _lbl("PROMOTIONS & DISCOUNTS", "LblTitle")
         close_btn = QPushButton("✕")
@@ -2911,9 +2952,7 @@ class PromotionsDialog(QDialog):
         title_row.addWidget(close_btn)
         hdr_l.addLayout(title_row)
 
-        sub_lbl = _lbl("Only promotions that follow authorization and audit requirements may be applied.", "LblMeta")
-        sub_lbl.setWordWrap(True)
-        hdr_l.addWidget(sub_lbl)
+        # Removed sub_lbl to reduce text density
         outer_l.addWidget(hdr)
 
         # ── Scrollable body ───────────────────────────────────────────────────
@@ -2924,7 +2963,7 @@ class PromotionsDialog(QDialog):
         body.setStyleSheet("background:transparent;")
         body_l = QVBoxLayout(body)
         body_l.setContentsMargins(28, 18, 28, 18)
-        body_l.setSpacing(16)
+        body_l.setSpacing(24) # Increased spacing to let sections breathe
 
         # ── Section: Automatic Promotions ─────────────────────────────────────
         auto_promos = self.pos.obtener_promociones_automaticas_activas()
@@ -2950,9 +2989,7 @@ class PromotionsDialog(QDialog):
             no_lbl = _lbl("No automatic promotions are currently active.")
             no_lbl.setStyleSheet(f"color:{CLR_TEXT_DIM};font-size:13px;background:transparent;")
             auto_body_l.addWidget(no_lbl)
-        note_lbl = _lbl("These are applied automatically by the system. No action required.")
-        note_lbl.setStyleSheet(f"color:{CLR_TEXT_DIM};font-size:11px;background:transparent;")
-        auto_body_l.addWidget(note_lbl)
+        # Removed note_lbl to reduce text density
         auto_sec_inner = auto_sec.findChild(QFrame, "PromoPanelSection")
         if auto_sec_inner:
             for i in range(auto_body_l.count()):
@@ -2992,7 +3029,7 @@ class PromotionsDialog(QDialog):
                     for p in self._working
                 )
                 if already:
-                    applied_lbl = _lbl("✓ Applied")
+                    applied_lbl = _lbl(" Applied")
                     applied_lbl.setStyleSheet("color:#00B4A0;font-weight:800;font-size:12px;background:transparent;")
                     ep_row_l.addWidget(applied_lbl)
                 else:
@@ -3005,14 +3042,14 @@ class PromotionsDialog(QDialog):
                 if eleg_inner:
                     eleg_inner.layout().addWidget(ep_row)
         else:
-            no_e = _lbl("No eligibility promotions configured. Set them up in CORE.")
+            no_e = _lbl("No eligibility promotions available right now.")
             no_e.setStyleSheet(f"color:{CLR_TEXT_DIM};font-size:13px;background:transparent;")
             if eleg_inner:
                 eleg_inner.layout().addWidget(no_e)
         body_l.addWidget(eleg_sec)
 
         # ── Section: Promo Code ───────────────────────────────────────────────
-        code_sec = self._make_section("🏷️  PROMO CODE")
+        code_sec = self._make_section("  PROMO CODE")
         code_inner = code_sec.findChild(QFrame, "PromoPanelSection")
         if code_inner:
             code_note = _lbl("Enter a promo code. Only one code per transaction is permitted.")
@@ -3041,7 +3078,7 @@ class PromotionsDialog(QDialog):
             for p in self._working:
                 if p.get('tipo') == 'CODIGO_PROMO':
                     self.inp_code.setText(p.get('nombre', '').replace("Promo Code: ", ""))
-                    self.lbl_code_result.setText(f"✓ Code applied: {p.get('nombre','')}")
+                    self.lbl_code_result.setText(f" Code applied: {p.get('nombre','')}")
                     self.lbl_code_result.setStyleSheet("color:#00B4A0;font-size:12px;font-weight:700;background:transparent;")
                     self.lbl_code_result.setVisible(True)
                     self.inp_code.setEnabled(False)
@@ -3050,16 +3087,65 @@ class PromotionsDialog(QDialog):
         body_l.addWidget(code_sec)
 
         # ── Section: Manual Discount (Supervisor Required) ────────────────────
-        manual_sec = self._make_section("🔐  MANUAL DISCOUNT  —  SUPERVISOR REQUIRED")
+        manual_sec = self._make_section("  MANUAL DISCOUNT  —  SUPERVISOR REQUIRED")
         manual_inner = manual_sec.findChild(QFrame, "PromoPanelSection")
         if manual_inner:
-            manual_note = _lbl(
-                "A supervisor must be physically present and authorize this discount using their email, "
-                "password, and Google Authenticator OTP. Authorization expires after this transaction."
+            # Removed manual_note to reduce text density
+
+            # ── Inline supervisor auth expandable panel ────────────────────────
+            self._inline_auth_panel = QFrame()
+            self._inline_auth_panel.setObjectName("SupervisorPanel")
+            self._inline_auth_panel.setStyleSheet(
+                f"QFrame#SupervisorPanel{{background:rgba(255,107,0,0.04);"
+                f"border:1px solid rgba(255,107,0,0.25);border-radius:10px;"
+                f"margin:4px 0;}}"
             )
-            manual_note.setStyleSheet(f"color:{CLR_TEXT_MID};font-size:12px;background:transparent;")
-            manual_note.setWordWrap(True)
-            manual_inner.layout().addWidget(manual_note)
+            iap_l = QVBoxLayout(self._inline_auth_panel)
+            iap_l.setContentsMargins(16, 12, 16, 12)
+            iap_l.setSpacing(8)
+
+            iap_l.addWidget(_lbl("SUPERVISOR EMAIL", "LblMeta"))
+            self._inp_auth_email = QLineEdit()
+            self._inp_auth_email.setPlaceholderText("supervisor@email.com")
+            self._inp_auth_email.setFixedHeight(40)
+            iap_l.addWidget(self._inp_auth_email)
+
+            otp_row = QHBoxLayout()
+            otp_row.addWidget(_lbl("ONE-TIME CODE (OTP)", "LblMeta"))
+            otp_row.addStretch()
+            totp_hint = _lbl("Google Authenticator")
+            totp_hint.setStyleSheet(f"color:{CLR_TEXT_DIM};font-size:11px;background:transparent;")
+            otp_row.addWidget(totp_hint)
+            iap_l.addLayout(otp_row)
+            self._inp_auth_otp = QLineEdit()
+            self._inp_auth_otp.setPlaceholderText("6-digit code")
+            self._inp_auth_otp.setFixedHeight(40)
+            self._inp_auth_otp.setMaxLength(6)
+            self._inp_auth_otp.returnPressed.connect(self._do_inline_auth)
+            iap_l.addWidget(self._inp_auth_otp)
+
+            self._lbl_inline_auth_err = _lbl("")
+            self._lbl_inline_auth_err.setStyleSheet(f"color:{CLR_ERROR};font-size:12px;font-weight:700;background:transparent;")
+            self._lbl_inline_auth_err.setVisible(False)
+            iap_l.addWidget(self._lbl_inline_auth_err)
+
+            auth_btn_row = QHBoxLayout()
+            btn_cancel_auth = QPushButton("Cancel")
+            btn_cancel_auth.setObjectName("BtnChampagne")
+            btn_cancel_auth.setFixedWidth(90)
+            btn_cancel_auth.clicked.connect(self._cancel_inline_auth)
+            self._btn_inline_auth = QPushButton("AUTHORIZE  →")
+            self._btn_inline_auth.setObjectName("BtnSuccess")
+            self._btn_inline_auth.setFixedHeight(40)
+            self._btn_inline_auth.setMinimumWidth(140)
+            self._btn_inline_auth.clicked.connect(self._do_inline_auth)
+            auth_btn_row.addWidget(btn_cancel_auth)
+            auth_btn_row.addStretch()
+            auth_btn_row.addWidget(self._btn_inline_auth)
+            iap_l.addLayout(auth_btn_row)
+
+            self._inline_auth_panel.setVisible(False)
+            manual_inner.layout().addWidget(self._inline_auth_panel)
 
             self.manual_auth_widget = QWidget()
             self.manual_auth_widget.setStyleSheet("background:transparent;")
@@ -3089,7 +3175,7 @@ class PromotionsDialog(QDialog):
                     f"{int(existing_manual.get('valor', 0))}%" if existing_manual.get('tipo_descuento') == 'PORCENTAJE'
                     else f"{existing_manual.get('valor', 0)}"
                 )
-                auth_done_lbl = _lbl(f"✓ Authorized by {existing_manual.get('supervisor_nombre', 'Supervisor')}")
+                auth_done_lbl = _lbl(f" Authorized by {existing_manual.get('supervisor_nombre', 'Supervisor')}")
                 auth_done_lbl.setStyleSheet("color:#00B4A0;font-weight:800;font-size:12px;background:transparent;")
                 mal.insertWidget(0, auth_done_lbl)
             else:
@@ -3099,6 +3185,7 @@ class PromotionsDialog(QDialog):
             manual_inner.layout().addWidget(self.manual_auth_widget)
             self._manual_inner = manual_inner
         body_l.addWidget(manual_sec)
+
         body_l.addStretch()
         scroll.setWidget(body)
         outer_l.addWidget(scroll, 1)
@@ -3114,7 +3201,7 @@ class PromotionsDialog(QDialog):
         btn_cancel.setObjectName("BtnChampagne")
         btn_cancel.clicked.connect(self.reject)
 
-        self.btn_done = QPushButton("APPLY & CLOSE  →")
+        self.btn_done = QPushButton("Apply & Return  →")
         self.btn_done.setObjectName("BtnSuccess")
         self.btn_done.setFixedHeight(48)
         self.btn_done.setMinimumWidth(200)
@@ -3215,13 +3302,13 @@ class PromotionsDialog(QDialog):
                 'supervisor_nombre': None,
                 'codigo_id': result.get('codigo_id'),
             })
-            self.lbl_code_result.setText(f"✓ Code valid: {result.get('nombre','')}  —  {result['valor']}% discount")
+            self.lbl_code_result.setText(f" Code valid: {result.get('nombre','')}  —  {result['valor']}% discount")
             self.lbl_code_result.setStyleSheet("color:#00B4A0;font-size:12px;font-weight:700;background:transparent;")
             self.lbl_code_result.setVisible(True)
             self.inp_code.setEnabled(False)
             self.btn_validate_code.setEnabled(False)
         else:
-            self.lbl_code_result.setText(f"✗ {result.get('error', 'Invalid promo code.')}")
+            self.lbl_code_result.setText(f" {result.get('error', 'Invalid promo code.')}")
             self.lbl_code_result.setStyleSheet(f"color:{CLR_ERROR};font-size:12px;font-weight:700;background:transparent;")
             self.lbl_code_result.setVisible(True)
 
@@ -3234,24 +3321,62 @@ class PromotionsDialog(QDialog):
             }
             self._apply_auth_ui(sup_info)
             return
+        # Show inline auth panel instead of a separate dialog
+        self.btn_request_auth.setVisible(False)
+        self._inline_auth_panel.setVisible(True)
+        self._inp_auth_email.setFocus()
 
-        dlg = SupervisorAuthDialog(self.sincronizador, "Manual Discount", parent=self)
-        if dlg.exec() == QDialog.Accepted:
-            sup_info = dlg.get_supervisor_info()
+    def _do_inline_auth(self):
+        """Handle inline supervisor TOTP authorization."""
+        email = self._inp_auth_email.text().strip()
+        otp = self._inp_auth_otp.text().strip()
+        if not email or not otp:
+            self._lbl_inline_auth_err.setText("Both fields are required.")
+            self._lbl_inline_auth_err.setVisible(True)
+            return
+        if len(otp) != 6 or not otp.isdigit():
+            self._lbl_inline_auth_err.setText("OTP must be exactly 6 digits.")
+            self._lbl_inline_auth_err.setVisible(True)
+            return
+        self._btn_inline_auth.setEnabled(False)
+        self._btn_inline_auth.setText("Verifying…")
+        try:
+            result = self.sincronizador.autenticar_supervisor_totp(email, otp)
+        except Exception as e:
+            result = {"ok": False, "error": str(e)}
+        self._btn_inline_auth.setEnabled(True)
+        self._btn_inline_auth.setText("AUTHORIZE  →")
+        if result.get("ok"):
+            main_win = self.parent()
             if main_win and hasattr(main_win, 'start_supervisor_session'):
                 main_win.start_supervisor_session(
-                    sup_info.get("supervisor_id"), 
-                    sup_info.get("supervisor_nombre", "Supervisor")
+                    result.get("supervisor_id"),
+                    result.get("supervisor_nombre", "Supervisor")
                 )
-            self._apply_auth_ui(sup_info)
+            self._inline_auth_panel.setVisible(False)
+            self._apply_auth_ui(result)
+        else:
+            self._lbl_inline_auth_err.setText(f"Authorization denied: {result.get('error', 'Unknown error.')}")
+            self._lbl_inline_auth_err.setVisible(True)
+            self._inp_auth_otp.clear()
+            self._inp_auth_otp.setFocus()
+
+    def _cancel_inline_auth(self):
+        """Cancel inline auth and restore the request button."""
+        self._inline_auth_panel.setVisible(False)
+        self.btn_request_auth.setVisible(True)
+        self._lbl_inline_auth_err.setVisible(False)
+        self._inp_auth_email.clear()
+        self._inp_auth_otp.clear()
 
     def _apply_auth_ui(self, sup_info: dict):
         self.manual_auth_widget.setVisible(True)
         self.btn_request_auth.setVisible(False)
-        auth_lbl = _lbl(f"✓ Authorized by {sup_info.get('supervisor_nombre', 'Supervisor')}")
+        auth_lbl = _lbl(f" Authorized by {sup_info.get('supervisor_nombre', 'Supervisor')}")
         auth_lbl.setStyleSheet("color:#00B4A0;font-weight:800;font-size:12px;background:transparent;")
         self._manual_inner.layout().insertWidget(0, auth_lbl)
         self._sup_info = sup_info
+
 
     def _finalize(self):
         """Collect manual discount and finalize working list."""
@@ -3372,13 +3497,14 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
         
         title_bar = QFrame()
+        title_bar.setObjectName("TitleBar")
         title_bar.setFixedHeight(40)
-        title_bar.setStyleSheet(f"background-color: {CLR_SURFACE_HIGH}; border-bottom: 1px solid {CLR_BORDER};")
+        title_bar.setStyleSheet(f"QFrame#TitleBar {{ background-color: {CLR_SURFACE_HIGH}; border-bottom: 1px solid {CLR_BORDER}; }}")
         title_layout = QHBoxLayout(title_bar)
         title_layout.setContentsMargins(15, 0, 10, 0)
         title_layout.setSpacing(10)
         
-        icon_lbl = QLabel("🛒")
+        icon_lbl = QLabel("")
         icon_lbl.setStyleSheet(f"font-size: 18px; color: {CLR_EMBER}; background: transparent;")
         title_layout.addWidget(icon_lbl)
         
@@ -3387,6 +3513,25 @@ class MainWindow(QMainWindow):
         title_layout.addWidget(title_lbl)
         title_layout.addStretch()
         
+        btn_help = QPushButton("? Help")
+        btn_help.setFixedSize(85, 32)
+        btn_help.setToolTip("POS Reference Guide")
+        btn_help.setStyleSheet(
+            f"QPushButton {{ "
+            f"background-color: {CLR_EMBER}; "
+            f"border: 1px solid {CLR_EMBER}; "
+            f"border-radius: 16px; "
+            f"color: #FFFFFF; "
+            f"font-size: 13px; font-weight: bold; "
+            f"padding: 0px; "
+            f"}} "
+            f"QPushButton:hover {{ "
+            f"background-color: #E56000; "
+            f"}}"
+        )
+        btn_help.clicked.connect(self._show_help_panel)
+        title_layout.addWidget(btn_help)
+
         btn_min = QPushButton("—")
         btn_max = QPushButton("◻")
         btn_close = QPushButton("✕")
@@ -3394,6 +3539,7 @@ class MainWindow(QMainWindow):
             btn.setFixedSize(46, 32)
             btn.setStyleSheet(f"QPushButton {{ background: transparent; border: none; color: {CLR_TEXT}; font-size: 14px; font-family: 'Segoe UI', sans-serif; padding-bottom: 2px; }} QPushButton:hover {{ background: rgba(255,255,255,0.1); }}")
             title_layout.addWidget(btn)
+
         
         btn_close.setStyleSheet(f"QPushButton {{ background: transparent; border: none; color: {CLR_TEXT}; font-size: 14px; font-family: 'Segoe UI', sans-serif; padding-bottom: 2px; }} QPushButton:hover {{ background: #E81123; color: white; }}")
         
@@ -3427,10 +3573,12 @@ class MainWindow(QMainWindow):
         outer.setAlignment(Qt.AlignCenter)
 
         card = _card()
-        card.setFixedSize(480, 440)
+        card.setFixedWidth(480)
+        card.setMinimumHeight(520)
         card_l = QVBoxLayout(card)
         card_l.setContentsMargins(44, 44, 44, 44)
         card_l.setSpacing(14)
+        card_l.setAlignment(Qt.AlignCenter)
 
         # Logo / Title
         logo = _lbl("MASTER POS", align=Qt.AlignCenter)
@@ -3445,6 +3593,14 @@ class MainWindow(QMainWindow):
         sub = _lbl("Enter your credentials to continue", "LblSubtitle",
                    Qt.AlignCenter)
         card_l.addWidget(sub)
+
+        from utils.timezone import get_local_now as _gln
+        _date_str = _gln().strftime("%A, %B %d, %Y")
+        ctx_lbl = _lbl(f"Nocturnal Bar  •  {_date_str}", align=Qt.AlignCenter)
+        ctx_lbl.setStyleSheet(
+            f"color:{CLR_TEXT_DIM};font-size:11px;font-weight:500;letter-spacing:0.3px;background:transparent;"
+        )
+        card_l.addWidget(ctx_lbl)
         card_l.addWidget(_hdiv())
         card_l.addSpacing(8)
 
@@ -3453,6 +3609,8 @@ class MainWindow(QMainWindow):
         self.u.setPlaceholderText("cashier@email.com")
         self.u.setFixedHeight(46)
         card_l.addWidget(self.u)
+
+        card_l.addSpacing(12)  # Added spacing to prevent overlap
 
         card_l.addWidget(_lbl("PASSWORD", "LblMeta"))
         self.p = QLineEdit()
@@ -3479,7 +3637,8 @@ class MainWindow(QMainWindow):
         outer.setAlignment(Qt.AlignCenter)
 
         card = _card()
-        card.setFixedSize(480, 360)
+        card.setFixedWidth(480)
+        card.setMinimumHeight(460)
         card_l = QVBoxLayout(card)
         card_l.setContentsMargins(44, 44, 44, 44)
         card_l.setSpacing(14)
@@ -3489,7 +3648,19 @@ class MainWindow(QMainWindow):
 
         sub = _lbl("Enter the initial cash in the drawer to open the register",
                    "LblSubtitle", Qt.AlignCenter)
+        sub.setWordWrap(True)
         card_l.addWidget(sub)
+
+        from utils.timezone import get_local_now as _gln2
+        from services.auth_service import AuthService as _AS
+        _date_str2 = _gln2().strftime("%A, %B %d, %Y  •  %I:%M %p")
+        _cashier = getattr(_AS, 'current_user_name', None) or ""
+        _welcome = f"Welcome, {_cashier}  |  {_date_str2}" if _cashier else _date_str2
+        ctx_lbl2 = _lbl(_welcome, align=Qt.AlignCenter)
+        ctx_lbl2.setStyleSheet(
+            f"color:{CLR_TEXT_DIM};font-size:11px;font-weight:500;letter-spacing:0.3px;background:transparent;"
+        )
+        card_l.addWidget(ctx_lbl2)
         card_l.addWidget(_hdiv())
         card_l.addSpacing(6)
 
@@ -3498,6 +3669,7 @@ class MainWindow(QMainWindow):
         self.f.setPlaceholderText("Ex. 5,000.00")
         self.f.setFixedHeight(46)
         self.f.returnPressed.connect(self.do_apertura)
+        self.f.textChanged.connect(self._mask_cash_input)
         card_l.addWidget(self.f)
 
         card_l.addSpacing(12)
@@ -3719,27 +3891,44 @@ class MainWindow(QMainWindow):
         right_l.setContentsMargins(0, 0, 0, 0)
         right_l.setSpacing(10)
 
-        # Delete item button
-        btn_delete = QPushButton("DELETE ITEM")
-        btn_delete.setObjectName("BtnDanger")
-        btn_delete.setFixedHeight(46)
-        btn_delete.clicked.connect(self.do_delete_item)
-        right_l.addWidget(btn_delete)
-
-        # Cart table (with Notes column)
+        # Cart card with mini-header containing Empty Cart button
         cart_card = _card()
         cart_card_l = QVBoxLayout(cart_card)
         cart_card_l.setContentsMargins(0, 0, 0, 0)
         cart_card_l.setSpacing(0)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["PRODUCT", "QTY", "PRICE", "NOTES"])
+        # Cart mini-header (label + empty cart button)
+        cart_hdr_w = QWidget()
+        cart_hdr_w.setStyleSheet(
+            f"background:{CLR_BG_DEEP};border-bottom:1px solid {CLR_BORDER};"
+        )
+        cart_hdr_l = QHBoxLayout(cart_hdr_w)
+        cart_hdr_l.setContentsMargins(12, 6, 8, 6)
+        cart_hdr_l.setSpacing(8)
+        cart_hdr_lbl = _lbl("ORDER CART", "LblMeta")
+        self._btn_empty_cart = QPushButton("  Empty Cart")
+        self._btn_empty_cart.setFixedHeight(26)
+        self._btn_empty_cart.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{CLR_ERROR};border:1px solid rgba(255,76,76,0.35);"
+            f"border-radius:6px;font-size:11px;font-weight:700;padding:0 8px;}}"
+            f"QPushButton:hover{{background:rgba(255,76,76,0.12);border-color:{CLR_ERROR};}}"
+        )
+        self._btn_empty_cart.clicked.connect(self.do_empty_cart)
+        cart_hdr_l.addWidget(cart_hdr_lbl)
+        cart_hdr_l.addStretch()
+        cart_hdr_l.addWidget(self._btn_empty_cart)
+        cart_card_l.addWidget(cart_hdr_w)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["PRODUCT", "QTY", "PRICE", "−", "INSTRUCTIONS"])
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.Fixed)
-        self.table.setColumnWidth(3, 140)
+        header.setSectionResizeMode(4, QHeaderView.Fixed)
+        self.table.setColumnWidth(3, 36)
+        self.table.setColumnWidth(4, 130)
         self.table.verticalHeader().setDefaultSectionSize(48)
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -3748,6 +3937,7 @@ class MainWindow(QMainWindow):
         self.table.setShowGrid(False)
         cart_card_l.addWidget(self.table)
         right_l.addWidget(cart_card, 1)
+
 
         # Totals card
         totals_card = _card()
@@ -3892,16 +4082,96 @@ class MainWindow(QMainWindow):
                 else:
                     discount_str = f"-${val}"
 
-            if nuevo_precio < float(p.precio_actual):
-                btn_text = f"{discount_str}\n{p.nombre}\n{money(nuevo_precio)}\nStock: {display_stock}"
-            else:
-                btn_text = f"\n{p.nombre}\n{money(p.precio_actual)}\nStock: {display_stock}"
-
-            btn = QPushButton(btn_text)
-            
+            btn = QPushButton()
             btn.setObjectName("BtnProductPromo" if nuevo_precio < float(p.precio_actual) else "BtnProduct")
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            btn.setMinimumHeight(110)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setFixedHeight(240)
+
+            btn_layout = QVBoxLayout(btn)
+            btn_layout.setContentsMargins(8, 12, 8, 12)
+            btn_layout.setSpacing(6)
+            btn_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+            
+            import os
+            img_path = os.path.join(os.path.dirname(__file__), '..', 'images', f"product_{p.id_producto}.jpg")
+            
+            if os.path.exists(img_path):
+                from PySide6.QtGui import QPainter, QPainterPath
+                img_lbl = QLabel()
+                img_lbl.setAlignment(Qt.AlignCenter)
+                img_lbl.setFixedSize(80, 80)
+                pix = QPixmap(img_path)
+                if not pix.isNull():
+                    scaled_pix = pix.scaled(80, 80, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                    out_pix = QPixmap(80, 80)
+                    out_pix.fill(Qt.transparent)
+                    
+                    painter = QPainter(out_pix)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+                    
+                    path = QPainterPath()
+                    path.addRoundedRect(0, 0, 80, 80, 12, 12)
+                    painter.setClipPath(path)
+                    
+                    x = (scaled_pix.width() - 80) // 2
+                    y = (scaled_pix.height() - 80) // 2
+                    painter.drawPixmap(0, 0, scaled_pix, x, y, 80, 80)
+                    painter.end()
+                    
+                    img_lbl.setPixmap(out_pix)
+                img_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+                img_lbl.setStyleSheet("background: transparent;")
+                btn_layout.addWidget(img_lbl, alignment=Qt.AlignCenter)
+            else:
+                placeholder = QLabel()
+                placeholder.setFixedSize(80, 80)
+                placeholder.setAttribute(Qt.WA_TransparentForMouseEvents)
+                placeholder.setStyleSheet("background: transparent;")
+                btn_layout.addWidget(placeholder, alignment=Qt.AlignCenter)
+            
+            # Product Name
+            name_lbl = QLabel(p.nombre)
+            name_lbl.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+            name_lbl.setWordWrap(True)
+            name_lbl.setFixedHeight(36)
+            name_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+            name_lbl.setStyleSheet("background: transparent; font-weight: 900; font-size: 13px; margin-top: 4px;")
+            btn_layout.addWidget(name_lbl)
+            
+            # Price
+            if nuevo_precio < float(p.precio_actual):
+                price_text = f"<span style='text-decoration: line-through; font-size: 11px;'>{money(float(p.precio_actual))}</span> &nbsp; <span style='color: #FFB020; font-size: 15px;'>{money(nuevo_precio)}</span>"
+            else:
+                price_text = f"<span style='color: #FFB020; font-size: 15px;'>{money(float(p.precio_actual))}</span>"
+                
+            price_lbl = QLabel(price_text)
+            price_lbl.setAlignment(Qt.AlignCenter)
+            price_lbl.setFixedHeight(24)
+            price_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+            price_lbl.setStyleSheet("background: transparent; font-weight: 800;")
+            btn_layout.addWidget(price_lbl)
+            
+            # Footer: Stock and Discount
+            footer_widget = QWidget()
+            footer_widget.setFixedHeight(20)
+            footer_widget.setAttribute(Qt.WA_TransparentForMouseEvents)
+            footer_widget.setStyleSheet("background: transparent;")
+            footer_layout = QHBoxLayout(footer_widget)
+            footer_layout.setContentsMargins(0, 0, 0, 0)
+            
+            stock_lbl = QLabel(f"Stock: {display_stock}")
+            stock_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+            stock_lbl.setStyleSheet("background: transparent; font-size: 11px;")
+            footer_layout.addWidget(stock_lbl, alignment=Qt.AlignLeft | Qt.AlignVCenter)
+            
+            if discount_str:
+                disc_lbl = QLabel(discount_str)
+                disc_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+                disc_lbl.setStyleSheet("background: transparent; color: #FF4C4C; font-weight: 900; font-size: 11px;")
+                footer_layout.addWidget(disc_lbl, alignment=Qt.AlignRight | Qt.AlignVCenter)
+                
+            btn_layout.addWidget(footer_widget)
 
             btn.clicked.connect(
                 lambda checked, prod=p, button=btn: self.agregar_a_tabla(prod, button)
@@ -4062,14 +4332,24 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 1, QTableWidgetItem("1"))
             self.table.setItem(row, 2, QTableWidgetItem(money(precio_final)))
 
-            # Notes button
-            notes_btn = QPushButton("+ NOTE")
+            # Minus quantity button (col 3)
+            minus_btn = QPushButton("−")
+            minus_btn.setObjectName("BtnMinusQty")
+            minus_btn.setFixedSize(28, 28)
+            minus_btn.setCursor(QCursor(Qt.PointingHandCursor))
+            minus_btn.clicked.connect(
+                lambda checked, r=row: self.decrement_cart_item(r)
+            )
+            self.table.setCellWidget(row, 3, minus_btn)
+
+            # Instructions button (col 4)
+            notes_btn = QPushButton("+ Instructions")
             notes_btn.setObjectName("BtnNotes")
             notes_btn.setCursor(QCursor(Qt.PointingHandCursor))
             notes_btn.clicked.connect(
                 lambda checked, r=row: self.open_modifier_for_row(r)
             )
-            self.table.setCellWidget(row, 3, notes_btn)
+            self.table.setCellWidget(row, 4, notes_btn)
 
             self.carrito.append({
                 'id': p.id_producto,
@@ -4079,7 +4359,8 @@ class MainWindow(QMainWindow):
                 'cant': 1,
                 'tasa': p.tasa_impuesto,
                 'stock': p.stock_local,
-                'notas_item': []
+                'notas_item': [],
+                'id_categoria': p.id_categoria,
             })
 
         self.update_totals()
@@ -4095,7 +4376,9 @@ class MainWindow(QMainWindow):
             return
         item_data = self.carrito[row]
         modifiers = self.pos.obtener_modificadores_producto(
-            item_data['id'], sincronizador=self.sincronizador
+            item_data['id'],
+            sincronizador=self.sincronizador,
+            categoria_id=item_data.get('id_categoria')
         )
         dlg = ItemModifierDialog(
             product_name=item_data['nombre'],
@@ -4112,14 +4395,14 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self.carrito):
             return
         notas = self.carrito[row].get('notas_item', [])
-        btn = self.table.cellWidget(row, 3)
+        btn = self.table.cellWidget(row, 4)  # col 4 — Instructions
         if btn:
             if notas:
                 text = ', '.join(notas)
                 btn.setText(text[:18] + '…' if len(text) > 18 else text)
                 btn.setObjectName("BtnNotesActive")
             else:
-                btn.setText("+ NOTE")
+                btn.setText("+ Instructions")
                 btn.setObjectName("BtnNotes")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
@@ -4133,6 +4416,142 @@ class MainWindow(QMainWindow):
             self.search.setFocus()
         else:
             self.show_warning("Attention", "Select a row in the table to delete.")
+
+    def do_empty_cart(self):
+        """Prompt for confirmation then clear all items from the cart."""
+        if not self.carrito:
+            return
+        reply = AppMessageBox.show_msg(
+            self, "Empty Cart",
+            "Remove all items from the cart?\nThis action cannot be undone.",
+            "[?]", "YES_NO"
+        )
+        if reply == QMessageBox.Yes:
+            self.carrito = []
+            self.table.setRowCount(0)
+            self.update_totals()
+
+    def decrement_cart_item(self, row):
+        """Reduce quantity of a cart item by 1; removes the row when qty hits 0."""
+        if row < 0 or row >= len(self.carrito):
+            return
+        self.carrito[row]['cant'] -= 1
+        if self.carrito[row]['cant'] <= 0:
+            self.table.removeRow(row)
+            self.carrito.pop(row)
+        else:
+            self.table.item(row, 1).setText(str(self.carrito[row]['cant']))
+        self.update_totals()
+
+    def _mask_cash_input(self, text):
+        """Real-time masking on the cash declaration field — digits and single decimal only."""
+        clean = []
+        dot_seen = False
+        for ch in text:
+            if ch.isdigit():
+                clean.append(ch)
+            elif ch in ('.', ',') and not dot_seen:
+                clean.append('.')
+                dot_seen = True
+        cleaned = ''.join(clean)
+        if cleaned != text:
+            self.f.blockSignals(True)
+            cur = self.f.cursorPosition()
+            self.f.setText(cleaned)
+            self.f.setCursorPosition(max(0, cur - (len(text) - len(cleaned))))
+            self.f.blockSignals(False)
+
+    def _show_help_panel(self):
+        """Open the POS Reference Guide panel."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("POS Reference Guide")
+        dlg.setStyleSheet(STYLESHEET)
+        dlg.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(0, 0, 0, 0)
+        card = _card()
+        card_l = QVBoxLayout(card)
+        card_l.setContentsMargins(32, 24, 32, 24)
+        card_l.setSpacing(12)
+
+        hdr = QHBoxLayout()
+        hdr.addWidget(_lbl("  POS REFERENCE GUIDE", "LblTitle"))
+        hdr.addStretch()
+        x_btn = QPushButton("✕")
+        x_btn.setObjectName("BtnClose")
+        x_btn.setFixedSize(30, 30)
+        x_btn.clicked.connect(dlg.accept)
+        hdr.addWidget(x_btn)
+        card_l.addLayout(hdr)
+        card_l.addWidget(_hdiv())
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        content = QWidget()
+        content.setStyleSheet("background:transparent;")
+        cl = QVBoxLayout(content)
+        cl.setSpacing(8)
+        cl.setContentsMargins(0, 4, 0, 4)
+
+        sections = [
+            ("  ADDING PRODUCTS", [
+                "Click any product card to add it to the cart.",
+                "Click again to increase the quantity.",
+                "Use the [−] button in each cart row to reduce qty by 1.",
+            ]),
+            ("  HOLD & RESUME ORDER", [
+                "Click '+ Hold Order' to pause and save the current cart.",
+                "Click 'HELD (n)' in the header to resume a held order.",
+            ]),
+            ("  PROMOTIONS & DISCOUNTS", [
+                "Click 'PROMOTIONS' to access promo codes and discounts.",
+                "Eligibility promos require a verified ID or membership.",
+                "Manual discounts require supervisor OTP authorization.",
+            ]),
+            ("  SPLIT BILL", [
+                "Click 'SPLIT BILL' to divide the total among multiple guests.",
+                "Modes: Equal Split, By Item, or Custom Amount.",
+            ]),
+            ("  CHANGE CASHIER", [
+                "Logs out the current cashier without closing the shift.",
+                "The register fund and sales totals are preserved.",
+            ]),
+            ("  CLOSE REGISTER (Z)", [
+                "Ends the current shift and triggers a reconciliation report.",
+                "Enter the physical cash count before confirming.",
+            ]),
+        ]
+        for sec_title, items in sections:
+            t = _lbl(sec_title)
+            t.setStyleSheet(f"color:{CLR_EMBER};font-size:12px;font-weight:800;letter-spacing:0.8px;background:transparent;")
+            cl.addWidget(t)
+            for item in items:
+                il = _lbl(f"  • {item}")
+                il.setWordWrap(True)
+                il.setStyleSheet(f"color:{CLR_TEXT};font-size:12px;background:transparent;")
+                cl.addWidget(il)
+            cl.addSpacing(4)
+
+        cl.addStretch()
+        scroll.setWidget(content)
+        card_l.addWidget(scroll, 1)
+
+        foot = QHBoxLayout()
+        foot.addStretch()
+        ok = QPushButton("Got it")
+        ok.setObjectName("BtnSuccess")
+        ok.setFixedWidth(110)
+        ok.clicked.connect(dlg.accept)
+        foot.addWidget(ok)
+        card_l.addLayout(foot)
+
+        root.addWidget(card)
+        root.setSizeConstraint(QVBoxLayout.SetFixedSize)
+        dlg.setMinimumWidth(480)
+        dlg.exec()
+
 
     # ─────────────────────────────────────────────────────────────────────────
     # Hold Orders
@@ -4196,14 +4615,25 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 0, QTableWidgetItem(item['nombre']))
             self.table.setItem(row, 1, QTableWidgetItem(str(item['cant'])))
             self.table.setItem(row, 2, QTableWidgetItem(f"$ {float(item['precio']):,.2f}"))
-            notes_btn = QPushButton("+ NOTE")
+
+            # Minus quantity button (col 3)
+            minus_btn = QPushButton("−")
+            minus_btn.setObjectName("BtnMinusQty")
+            minus_btn.setFixedSize(28, 28)
+            minus_btn.setCursor(QCursor(Qt.PointingHandCursor))
+            minus_btn.clicked.connect(lambda checked, r=row: self.decrement_cart_item(r))
+            self.table.setCellWidget(row, 3, minus_btn)
+
+            # Instructions button (col 4)
+            notes_btn = QPushButton("+ Instructions")
             notes_btn.setObjectName("BtnNotes")
             notas = item.get('notas_item', [])
             if notas:
-                notes_btn.setText(', '.join(notas)[:18] + '…' if len(', '.join(notas)) > 18 else ', '.join(notas))
+                text = ', '.join(notas)
+                notes_btn.setText(text[:18] + '…' if len(text) > 18 else text)
                 notes_btn.setObjectName("BtnNotesActive")
             notes_btn.clicked.connect(lambda checked, r=row: self.open_modifier_for_row(r))
-            self.table.setCellWidget(row, 3, notes_btn)
+            self.table.setCellWidget(row, 4, notes_btn)
 
         # Restore billing info
         self.txt_cliente.setText(order.get('cliente', ''))
@@ -4592,7 +5022,17 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 0, QTableWidgetItem(item['nombre']))
             self.table.setItem(row, 1, QTableWidgetItem(str(item['cant'])))
             self.table.setItem(row, 2, QTableWidgetItem(f"$ {float(item['precio']):,.2f}"))
-            notes_btn = QPushButton("+ NOTE")
+
+            # Minus quantity button (col 3)
+            minus_btn = QPushButton("−")
+            minus_btn.setObjectName("BtnMinusQty")
+            minus_btn.setFixedSize(28, 28)
+            minus_btn.setCursor(QCursor(Qt.PointingHandCursor))
+            minus_btn.clicked.connect(lambda checked, r=row: self.decrement_cart_item(r))
+            self.table.setCellWidget(row, 3, minus_btn)
+
+            # Instructions button (col 4)
+            notes_btn = QPushButton("+ Instructions")
             notes_btn.setObjectName("BtnNotes")
             notas = item.get('notas_item', [])
             if notas:
@@ -4600,7 +5040,7 @@ class MainWindow(QMainWindow):
                 notes_btn.setText(text[:18] + '…' if len(text) > 18 else text)
                 notes_btn.setObjectName("BtnNotesActive")
             notes_btn.clicked.connect(lambda checked, r=row: self.open_modifier_for_row(r))
-            self.table.setCellWidget(row, 3, notes_btn)
+            self.table.setCellWidget(row, 4, notes_btn)
         self.update_totals()
         if mesa and str(mesa).strip():
             self.txt_cliente.setText(f"Table {mesa}")
@@ -4804,7 +5244,7 @@ class MainWindow(QMainWindow):
             badge_l.setContentsMargins(0, 0, 4, 0)
             badge_l.setSpacing(0)
 
-            icon_map = {'ELEGIBILIDAD': '🎫', 'CODIGO_PROMO': '🏷️', 'MANUAL': '🔐', 'AUTOMATICA': '⚡'}
+            icon_map = {'ELEGIBILIDAD': '🎫', 'CODIGO_PROMO': '', 'MANUAL': '', 'AUTOMATICA': '⚡'}
             icon = icon_map.get(promo.get('tipo', ''), '•')
             monto = promo.get('monto', 0.0)
             text = f"{icon} {promo['nombre']}  -{money(monto)}"

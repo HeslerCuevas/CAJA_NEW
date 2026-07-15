@@ -741,6 +741,37 @@ class POSService:
         finally:
             db.close()
 
-    def obtener_modificadores_producto(self, producto_id, sincronizador=None):
-        """Returns a generic list of modifiers since no remote modifiers exist."""
-        return ["Sin Hielo", "Poco Hielo", "Extra Fuerte", "Con Limon", "Para Llevar", "Sin Sal", "Extra Azucar"]
+    def obtener_modificadores_producto(self, producto_id, sincronizador=None, categoria_id=None):
+        """Returns a contextual list of modifiers based on the product category."""
+        drinks_mods = ["Sin Hielo", "Poco Hielo", "Extra Fuerte", "Con Limon", "Para Llevar", "Extra Azucar"]
+        food_mods = ["Para Llevar", "Sin Sal", "Extra Fuerte"]
+        default_mods = ["Para Llevar"]
+
+        if not categoria_id:
+            # Try to fetch category from product
+            from db.connection import SessionLocal
+            from models.entities import ProductoLocal
+            db = SessionLocal()
+            try:
+                p = db.query(ProductoLocal).filter_by(id_producto=producto_id).first()
+                if p:
+                    categoria_id = p.id_categoria
+            finally:
+                db.close()
+
+        if categoria_id:
+            from db.connection import SessionLocal
+            from models.entities import CategoriaLocal
+            db = SessionLocal()
+            try:
+                cat = db.query(CategoriaLocal).filter_by(id=categoria_id).first()
+                if cat:
+                    cat_name = cat.nombre.upper()
+                    if any(c in cat_name for c in ["BEBIDA", "DRINK", "CERVEZA", "BEER", "COCKTAIL", "TRAGO"]):
+                        return drinks_mods
+                    elif any(c in cat_name for c in ["COMIDA", "FOOD", "SNACK", "APPETIZER", "PLATO"]):
+                        return food_mods
+            finally:
+                db.close()
+        
+        return default_mods
