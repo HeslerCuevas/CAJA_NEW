@@ -1,3 +1,4 @@
+import time
 import requests
 import traceback
 from db.connection import SessionLocal, transaction_scope
@@ -8,6 +9,8 @@ class SyncService:
     def __init__(self, api_base_url="http://localhost:8001"):
         self.api_base_url = api_base_url
         self.token = None
+        self._offline_until = 0.0
+        self._offline_backoff_s = 15.0
 
     @staticmethod
     def _log(nivel, modulo, mensaje, e=None):
@@ -19,11 +22,39 @@ class SyncService:
         except Exception as log_e:
             print(f"SyncService log failure: {log_e}")
 
+    def _remote_available(self):
+        return time.monotonic() >= self._offline_until
+
+    def _mark_remote_failure(self):
+        self._offline_until = time.monotonic() + self._offline_backoff_s
+
+    def _mark_remote_success(self):
+        self._offline_until = 0.0
+
+    def _request(self, method, url, *, timeout=(0.75, 1.5), offline_sensitive=True, **kwargs):
+        if offline_sensitive and not self._remote_available():
+            return None
+        try:
+            response = requests.request(method, url, timeout=timeout, **kwargs)
+            if response.status_code >= 500:
+                self._mark_remote_failure()
+            else:
+                self._mark_remote_success()
+            return response
+        except requests.exceptions.RequestException:
+            if offline_sensitive:
+                self._mark_remote_failure()
+            raise
+
     def autenticar(self, identificador, password):
         url = f"{self.api_base_url}/api/v1/auth/login"
         payload = {"username": identificador.strip(), "password": password.strip()}
+        if not self._remote_available():
+            return False, "Connection error: gateway temporarily unavailable."
         try:
-            response = requests.post(url, data=payload, timeout=3.0)
+            response = self._request("post", url, data=payload, timeout=(0.75, 1.25))
+            if response is None:
+                return False, "Connection error: gateway temporarily unavailable."
             if response.status_code == 200:
                 self.token = response.json().get("access_token")
                 SyncService._log("INFO", "SyncService.autenticar", f"Successfully authenticated user '{identificador}'")
@@ -109,7 +140,9 @@ class SyncService:
             headers["x-gateway-token"] = self.token
             
         try:
-            response = requests.get(url, headers=headers, timeout=10)
+            response = self._request("get", url, headers=headers, timeout=(0.75, 1.5))
+            if response is None:
+                return False, "Gateway temporarily unavailable."
             if response.status_code == 200:
                 data = response.json()
                 
@@ -170,7 +203,9 @@ class SyncService:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
-            response = requests.get(url, headers=headers, timeout=5)
+            response = self._request("get", url, headers=headers, timeout=(0.75, 1.25))
+            if response is None:
+                return False, 0.0
             if response.status_code == 200:
                 data = response.json()
                 active = data.get("happy_hour_activo", False)
@@ -189,7 +224,9 @@ class SyncService:
             headers["Authorization"] = f"Bearer {self.token}"
             
         try:
-            response = requests.get(url, headers=headers, timeout=10)
+            response = self._request("get", url, headers=headers, timeout=(0.75, 1.5))
+            if response is None:
+                return []
             if response.status_code == 200:
                 data = response.json()
                 print(f"📡 Category sync: received {len(data)} categories from API", flush=True)
@@ -246,7 +283,9 @@ class SyncService:
             headers["Authorization"] = f"Bearer {self.token}"
 
         try:
-            response = requests.get(url, headers=headers, timeout=15)
+            response = self._request("get", url, headers=headers, timeout=(0.75, 2.0))
+            if response is None:
+                return False, "Gateway temporarily unavailable."
             if response.status_code == 200:
                 data = response.json()
 
@@ -299,7 +338,7 @@ class SyncService:
                                 img_path = os.path.join(images_dir, f"product_{prod_id}.jpg")
                                 
                                 # Only download if we don't have it or we want to overwrite
-                                img_resp = requests.get(image_url, timeout=5)
+                                img_resp = self._request("get", image_url, timeout=(0.75, 2.0), offline_sensitive=False)
                                 if img_resp.status_code == 200:
                                     with open(img_path, 'wb') as f:
                                         f.write(img_resp.content)
@@ -332,7 +371,9 @@ class SyncService:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
             print(f"[Stock] Requesting stock for producto {producto_id}", flush=True)
-            response = requests.get(url, headers=headers, timeout=5)
+            response = self._request("get", url, headers=headers, timeout=(0.75, 1.25))
+            if response is None:
+                return -1
             if response.status_code == 200:
                 data = response.json()
                 stock = (
@@ -364,7 +405,9 @@ class SyncService:
         try:
             # Step 1 — create the order
             print(f"📡 [crear_pedido] POST {create_url}", flush=True)
-            response = requests.post(create_url, headers=headers, json=payload, timeout=10)
+            response = self._request("post", create_url, headers=headers, json=payload, timeout=(0.75, 2.0))
+            if response is None:
+                return False, "Gateway temporarily unavailable."
             print(f"📡 [crear_pedido] Create response: HTTP {response.status_code} — {response.text[:200]}", flush=True)
 
             if response.status_code not in (200, 201):
@@ -394,7 +437,9 @@ class SyncService:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
             print(f"📡 [MESAS] GET {url}", flush=True)
-            response = requests.get(url, headers=headers, timeout=10)
+            response = self._request("get", url, headers=headers, timeout=(0.75, 1.5))
+            if response is None:
+                return []
             print(f"📡 [MESAS] HTTP {response.status_code}", flush=True)
 
             if response.status_code == 200:
@@ -442,7 +487,9 @@ class SyncService:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
             print(f"📡 Fetching order detail: {url}", flush=True)
-            response = requests.get(url, headers=headers, timeout=10)
+            response = self._request("get", url, headers=headers, timeout=(0.75, 1.5))
+            if response is None:
+                return []
             print(f"📡 Order detail response: HTTP {response.status_code}", flush=True)
             if response.status_code == 200:
                 data = response.json()
@@ -475,7 +522,9 @@ class SyncService:
         try:
             print(f"📡 Sending payment confirmation to CORE: POST {url}", flush=True)
 
-            response = requests.post(url, headers=headers, json={}, timeout=10)
+            response = self._request("post", url, headers=headers, json={}, timeout=(0.75, 2.0))
+            if response is None:
+                return False, "Gateway temporarily unavailable."
             print(f"📡 Payment confirmation response: HTTP {response.status_code}", flush=True)
             
             if response.status_code in (200, 201):
@@ -504,7 +553,9 @@ class SyncService:
         url = f'{self.api_base_url}/api/v1/productos/{producto_id}/modificadores'
         headers = {'Accept': 'application/json', 'Authorization': f'Bearer {self.token}'}
         try:
-            response = requests.get(url, headers=headers, timeout=3)
+            response = self._request("get", url, headers=headers, timeout=(0.75, 1.25))
+            if response is None:
+                return []
             if response.status_code == 200:
                 data = response.json()
                 if isinstance(data, list):
@@ -529,7 +580,9 @@ class SyncService:
 
         try:
             url = f"{self.api_base_url}/api/v1/promociones/"
-            response = requests.get(url, headers=headers, timeout=10)
+            response = self._request("get", url, headers=headers, timeout=(0.75, 1.5))
+            if response is None:
+                return []
             
             if response.status_code == 200:
                 data = response.json()
@@ -627,7 +680,9 @@ class SyncService:
                 }
                 
                 try:
-                    resp = requests.post(url, json=payload, headers=headers, timeout=5)
+                    resp = self._request("post", url, json=payload, headers=headers, timeout=(0.75, 1.5))
+                    if resp is None:
+                        break
                     if resp.status_code in (200, 201):
                         ap.sincronizado = True
                         procesados += 1
@@ -650,7 +705,9 @@ class SyncService:
             "otp": otp
         }
         try:
-            resp = requests.post(url, params=params, timeout=5)
+            resp = self._request("post", url, params=params, timeout=(0.75, 1.5))
+            if resp is None:
+                raise Exception("Connection error.")
             if resp.status_code == 200:
                 data = resp.json()
                 if not data.get("ok"):
@@ -675,7 +732,9 @@ class SyncService:
             "subtotal": subtotal
         }
         try:
-            resp = requests.post(url, params=params, timeout=5)
+            resp = self._request("post", url, params=params, timeout=(0.75, 1.5))
+            if resp is None:
+                raise Exception("Connection error verifying code.")
             if resp.status_code == 200:
                 return resp.json()
             else:
@@ -720,7 +779,9 @@ class SyncService:
                 })
             
             try:
-                resp = requests.post(url, json=payload, headers=headers, timeout=5)
+                resp = self._request("post", url, json=payload, headers=headers, timeout=(0.75, 1.5))
+                if resp is None:
+                    return 0
                 if resp.status_code in (200, 201):
                     for s in pendientes:
                         s.sincronizado = True

@@ -27,7 +27,7 @@ class AuthService:
         
         try:
 
-            response = requests.post(url, data=payload, timeout=3.0) 
+            response = requests.post(url, data=payload, timeout=(0.75, 1.25)) 
             
             if response.status_code == 200:
                 data = response.json()
@@ -83,7 +83,7 @@ class AuthService:
             ).first()
 
             if not user:
-                return False, "User not found in local fallback mode."
+                return False, "User not found in local offline database. Please try again or contact support."
 
             if not getattr(user, 'activo', True):
                 return False, "User is inactive."

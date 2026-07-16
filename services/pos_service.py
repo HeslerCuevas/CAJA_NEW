@@ -185,14 +185,14 @@ class POSService:
                     prod = db.query(ProductoLocal).filter_by(id_producto=d.id_producto).first()
                     name = prod.nombre if prod else f"PID-{d.id_producto}"
                     items_parts.append(f"{d.cantidad}x {name}")
-                items_summary = ", ".join(items_parts) if items_parts else "—"
+                items_summary = ", ".join(items_parts) if items_parts else "-"
 
-                tx_time = f.fecha_hora.strftime("%H:%M:%S") if f.fecha_hora else "—"
+                tx_time = f.fecha_hora.strftime("%H:%M:%S") if f.fecha_hora else "-"
                 transactions.append({
                     "time": tx_time,
                     "invoice_id": str(f.id_factura),
                     "items_summary": items_summary,
-                    "payment_method": f.metodo_pago or "—",
+                    "payment_method": f.metodo_pago or "-",
                     "total": float(f.total_general or 0),
                 })
 
@@ -328,7 +328,7 @@ class POSService:
 
                 prod = db.query(ProductoLocal).filter_by(id_producto=int(id_prod)).first()
                 if not prod:
-                    warnings.append(f"Product ID {id_prod} not found in local cache — skipped.")
+                    warnings.append(f"Product ID {id_prod} not found in local cache - skipped.")
                     continue
 
                 if prod.stock_local < cantidad and prod.stock_local != 9999:
@@ -351,7 +351,7 @@ class POSService:
 
         POSService.log_system_event(
             "INFO", "POSService.cargar_pedido_remoto",
-            f"Loaded remote order {self.current_import_uuid} — {len(carrito)} items, {len(warnings)} warnings."
+                    f"Loaded remote order {self.current_import_uuid} - {len(carrito)} items, {len(warnings)} warnings."
         )
         return carrito, warnings
 

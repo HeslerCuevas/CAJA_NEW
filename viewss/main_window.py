@@ -1,3 +1,5 @@
+import os
+import sys
 import time
 import datetime
 from utils.timezone import get_local_now
@@ -16,7 +18,7 @@ from PySide6.QtWidgets import (
     QScrollBar
 )
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, Slot, QObject, QSize
-from PySide6.QtGui import QColor, QBrush, QFont, QPalette, QCursor, QPixmap
+from PySide6.QtGui import QColor, QBrush, QFont, QPalette, QCursor, QPixmap, QIcon
 from services.pos_service import POSService
 from services.sync_service import SyncService
 from utils.money import money, rich_money
@@ -244,23 +246,29 @@ QPushButton#BtnHold:hover {{
 
 /* Split Bill button */
 QPushButton#BtnSplit {{
-    background-color: transparent;
-    color: {CLR_EMBER};
-    border: 1px solid rgba(255,107,0,0.5);
+    background-color: rgba(255,107,0,0.05);
+    color: #FFB380;
+    border: 1px solid rgba(255,107,0,0.4);
+    border-radius: 10px;
     font-size: 13px;
+    font-weight: 800;
+    padding: 10px 18px;
+    letter-spacing: 0.5px;
 }}
-QPushButton#BtnSplit:hover {{ background-color: rgba(255,107,0,0.08); border-color: {CLR_EMBER}; }}
+QPushButton#BtnSplit:hover {{ background-color: rgba(255,107,0,0.15); border-color: {CLR_EMBER}; }}
 
 /* Category chip — inactive */
 QPushButton#BtnCat {{
     background-color: {CLR_SURFACE};
     color: {CLR_TEXT_MID};
     border: 1px solid {CLR_BORDER};
-    border-radius: 20px;
-    padding: 7px 16px;
-    font-size: 12px;
+    border-radius: 16px;
+    padding: 0 14px;
+    font-size: 11px;
     font-weight: 600;
-    min-width: 60px;
+    min-width: 56px;
+    min-height: 30px;
+    max-height: 30px;
 }}
 QPushButton#BtnCat:hover {{ border-color: {CLR_EMBER}; color: {CLR_EMBER}; }}
 
@@ -268,11 +276,13 @@ QPushButton#BtnCatPromo {{
     background-color: rgba(0,180,160,0.10);
     color: {CLR_CHAMPAGNE};
     border: 1px solid rgba(0,180,160,0.42);
-    border-radius: 20px;
-    padding: 7px 16px;
-    font-size: 12px;
+    border-radius: 16px;
+    padding: 0 14px;
+    font-size: 11px;
     font-weight: 700;
-    min-width: 60px;
+    min-width: 56px;
+    min-height: 30px;
+    max-height: 30px;
 }}
 QPushButton#BtnCatPromo:hover {{
     background-color: rgba(0,180,160,0.16);
@@ -285,22 +295,26 @@ QPushButton#BtnCatActive {{
     background-color: {CLR_CHAMPAGNE};
     color: {CLR_BG};
     border: 1px solid {CLR_CHAMPAGNE};
-    border-radius: 20px;
-    padding: 7px 16px;
-    font-size: 12px;
+    border-radius: 16px;
+    padding: 0 14px;
+    font-size: 11px;
     font-weight: 700;
-    min-width: 60px;
+    min-width: 56px;
+    min-height: 30px;
+    max-height: 30px;
 }}
 
 QPushButton#BtnCatPromoActive {{
     background-color: rgba(226,180,154,0.92);
     color: {CLR_BG};
     border: 1px solid rgba(0,180,160,0.55);
-    border-radius: 20px;
-    padding: 7px 16px;
-    font-size: 12px;
+    border-radius: 16px;
+    padding: 0 14px;
+    font-size: 11px;
     font-weight: 800;
-    min-width: 60px;
+    min-width: 56px;
+    min-height: 30px;
+    max-height: 30px;
 }}
 
 /* Happy Hour chip — inactive */
@@ -308,10 +322,12 @@ QPushButton#BtnHH {{
     background-color: transparent;
     color: {CLR_CHAMPAGNE};
     border: 1px solid rgba(226,180,154,0.35);
-    border-radius: 20px;
-    padding: 7px 16px;
-    font-size: 12px;
+    border-radius: 16px;
+    padding: 0 14px;
+    font-size: 11px;
     font-weight: 600;
+    min-height: 30px;
+    max-height: 30px;
 }}
 QPushButton#BtnHH:hover {{ border-color: {CLR_CHAMPAGNE}; }}
 
@@ -320,24 +336,24 @@ QPushButton#BtnHHActive {{
     background-color: {CLR_EMBER};
     color: {CLR_BG};
     border: none;
-    border-radius: 20px;
-    padding: 7px 16px;
-    font-size: 12px;
+    border-radius: 16px;
+    padding: 0 14px;
+    font-size: 11px;
     font-weight: 800;
+    min-height: 30px;
+    max-height: 30px;
 }}
 
 /* Product card — premium card style */
 QPushButton#BtnProduct {{
     background-color: {CLR_SURFACE};
     color: {CLR_TEXT};
-    border: 1px solid {CLR_BORDER};
+    border: 1px solid rgba(148,163,184,0.22);
     border-radius: 16px;
-    padding: 14px 10px 10px 10px;
+    padding: 10px 10px 6px 10px;
     font-size: 12px;
     font-family: 'Epilogue', 'Segoe UI', sans-serif;
     text-align: center;
-    min-height: 120px;
-    max-height: 120px;
 }}
 QPushButton#BtnProduct:hover {{
     background-color: {CLR_SURFACE_HIGH};
@@ -349,14 +365,12 @@ QPushButton#BtnProduct:pressed {{ background-color: rgba(255,107,0,0.10); }}
 QPushButton#BtnProductPromo {{
     background-color: rgba(226,180,154,0.07);
     color: {CLR_CHAMPAGNE};
-    border: 1px solid rgba(226,180,154,0.35);
+    border: 1px solid rgba(226,180,154,0.45);
     border-radius: 16px;
-    padding: 14px 10px 10px 10px;
+    padding: 10px 10px 6px 10px;
     font-size: 12px;
     font-family: 'Epilogue', 'Segoe UI', sans-serif;
     text-align: center;
-    min-height: 120px;
-    max-height: 120px;
 }}
 QPushButton#BtnProductPromo:hover {{
     background-color: rgba(226,180,154,0.14);
@@ -754,6 +768,31 @@ def _lbl(text, obj_name=None, align=Qt.AlignLeft) -> QLabel:
     return l
 
 
+def _desktop_icon_path() -> str:
+    base_candidates = []
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base_candidates.append(sys._MEIPASS)
+    base_candidates.extend(
+        [
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+        ]
+    )
+
+    for base in base_candidates:
+        for relative_path in (
+            os.path.join("assets", "NocturnalBarDesktopIcon.ico"),
+            "NocturnalBarDesktopIcon.png",
+        ):
+            candidate = os.path.join(base, relative_path)
+            if os.path.exists(candidate):
+                return candidate
+
+    return os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "assets", "NocturnalBarDesktopIcon.ico")
+    )
+
+
 # ─── Worker classes ───────────────────────────────────────────────────────────
 class SyncWorker(QObject):
     """Persistent worker that lives on a single background thread for the app lifetime."""
@@ -774,6 +813,9 @@ class SyncWorker(QObject):
         sync_ok, sync_msg = True, ""
         hh_active, hh_discount = False, 0.0
         try:
+            if not self.sincronizador.token:
+                self.finished.emit(True, "", categorias, pedidos, hh_active, hh_discount)
+                return
             sync_ok, sync_msg = self.sincronizador.sincronizar_ventas_pendientes()
             hh_active, hh_discount = self.sincronizador.sincronizar_happy_hour()
             categorias = self.sincronizador.sincronizar_categorias() or []
@@ -788,7 +830,8 @@ class SyncWorker(QObject):
                 pedidos = self.sincronizador.obtener_cuentas_abiertas() or []
         except Exception as e:
             sync_ok, sync_msg = False, str(e)
-        self._busy = False
+        finally:
+            self._busy = False
         self.finished.emit(sync_ok, sync_msg, categorias, pedidos, hh_active, hh_discount)
 
 
@@ -1105,7 +1148,7 @@ class VerifoneDialog(QDialog):
     def __init__(self, amount, subtotal_str=None, itbis_str=None,
                  legaltip_str=None, extratip_str=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Card Payment — Processing")
+        self.setWindowTitle("Card Payment - Processing")
         self.setFixedSize(440, 480)
         self.setStyleSheet(STYLESHEET)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
@@ -1398,7 +1441,7 @@ class HeldOrdersDialog(QDialog):
                 row_l.setContentsMargins(16, 12, 16, 12)
 
                 ts = order.get('timestamp', '')
-                cliente = order.get('cliente', '—') or '—'
+                cliente = order.get('cliente', '-') or '-'
                 n_items = sum(int(float(i.get('cant', 1))) for i in order.get('carrito', []))
                 sub = sum(
                     float(i.get('precio', 0)) * i.get('cant', 1)
@@ -1407,7 +1450,7 @@ class HeldOrdersDialog(QDialog):
 
                 info_l = QVBoxLayout()
                 info_l.setSpacing(2)
-                name_lbl = _lbl(f"Order #{idx + 1}  —  {cliente}")
+                name_lbl = _lbl(f"Order #{idx + 1}  -  {cliente}")
                 name_lbl.setStyleSheet(f"color:{CLR_TEXT};font-weight:700;font-size:14px;")
                 meta_lbl = _lbl(f"{n_items} item(s)  •  Subtotal: {money(sub)}  •  {ts}", "LblMeta")
                 info_l.addWidget(name_lbl)
@@ -1476,7 +1519,7 @@ class SplitBillDialog(QDialog):
 
     def __init__(self, carrito, pos_service, sincronizador,
                  ncf_tipo, ncf_num, notas, cliente,
-                 happy_hour_discount=0.0, parent=None):
+                 happy_hour_discount=0.0, parent=None, remote_order=False):
         super().__init__(parent)
         self.setWindowTitle("Split Bill")
         self.setMinimumSize(860, 620)
@@ -1491,6 +1534,11 @@ class SplitBillDialog(QDialog):
         self.notas = notas
         self.cliente = cliente
         self.hh_discount = happy_hour_discount
+        # Active-table orders already exist in CORE.  In this mode the dialog
+        # collects/validates each portion payment, while the caller closes the
+        # original remote order once all portions are paid.  This prevents the
+        # split from creating duplicate CORE orders.
+        self.remote_order = remote_order
 
         self.sub, self.imp, self.prop_legal, self.total = pos_service.calcular_totales(
             carrito, global_discount_pct=happy_hour_discount
@@ -2019,13 +2067,42 @@ class SplitBillDialog(QDialog):
             if vd.exec() != QDialog.Accepted:
                 return
 
+        if self.remote_order:
+            if method == "EFECTIVO":
+                try:
+                    cash_received = Decimal(str(cash_val or "0"))
+                    guest_total = Decimal(str(self.pos.calcular_totales(
+                        guest['items'], happy_hour_discount=self.hh_discount
+                    )[3]))
+                except (ValueError, TypeError, ArithmeticError):
+                    AppMessageBox.warning(self, "Payment Failed", "Invalid cash amount entered.")
+                    return
+                if cash_received < guest_total:
+                    AppMessageBox.warning(self, "Payment Failed", "Insufficient cash.")
+                    return
+                change_text = f"\nChange to return: {money(float(cash_received - guest_total))}" if cash_received - guest_total > Decimal("0.009") else ""
+            else:
+                change_text = ""
+            self._bi_paid.add(g_idx)
+            AppMessageBox.information(
+                self, "Payment Processed",
+                f"{guest['name']} has successfully paid their portion.{change_text}"
+            )
+            self._rebuild_bi_guests()
+            self._update_footer()
+            guests_with_items = [i for i, g in enumerate(self._bi_guests) if g['items']]
+            if guests_with_items and all(i in self._bi_paid for i in guests_with_items) and not self._bi_unassigned:
+                AppMessageBox.information(self, "Split Complete", "All guests have paid! The bill is fully settled.")
+                self.accept()
+            return
+
         cambio, msg = self.pos.procesar_venta(
             carrito=guest['items'],
             efectivo=cash_val,
             metodo=method,
             ncf_tipo=self.ncf_tipo,
             ncf_num=self.ncf_num,
-            notas=f"Split Bill — {guest['name']} | {self.notas}",
+            notas=f"Split Bill - {guest['name']} | {self.notas}",
             cliente=f"{self.cliente} ({guest['name']})",
             sincronizador=self.sincronizador,
             deduct_stock=True,
@@ -2231,7 +2308,7 @@ class SplitBillDialog(QDialog):
                 f"Paid: {n_paid}/{n_total} guests"
             )
             if g_idx in self._eq_paid:
-                self.btn_pay.setText("Already Paid — Select Another Guest")
+                self.btn_pay.setText("Already Paid - Select Another Guest")
                 self.btn_pay.setEnabled(False)
             else:
                 self.btn_pay.setText(f"Pay Guest {g_idx+1}  ({money(amt)})")
@@ -2304,6 +2381,36 @@ class SplitBillDialog(QDialog):
             )
             if vd.exec() != QDialog.Accepted:
                 return
+
+        if self.remote_order:
+            if method == "EFECTIVO":
+                try:
+                    cash_received = Decimal(str(cash_val or "0"))
+                    amount_decimal = Decimal(str(amount))
+                except (ValueError, TypeError, ArithmeticError):
+                    AppMessageBox.warning(self, "Payment Failed", "Invalid cash amount entered.")
+                    return
+                if cash_received < amount_decimal:
+                    AppMessageBox.warning(self, "Payment Failed", "Insufficient cash.")
+                    return
+                change_text = f"\nChange to return: {money(float(cash_received - amount_decimal))}" if cash_received - amount_decimal > Decimal("0.009") else ""
+            else:
+                change_text = ""
+            self._eq_paid.add(g_idx)
+            AppMessageBox.information(
+                self, "Payment Processed",
+                f"Guest {g_idx+1} has successfully paid their portion.{change_text}"
+            )
+            for ni in range(self._eq_guests):
+                if ni not in self._eq_paid:
+                    self._eq_selected = ni
+                    break
+            self._rebuild_eq_cards()
+            self._update_footer()
+            if len(self._eq_paid) == self._eq_guests:
+                AppMessageBox.information(self, "Split Complete", "All guests have paid! The bill is fully settled.")
+                self.accept()
+            return
 
         # Build a synthetic single-item cart for accounting
         # The first guest triggers stock deduction, others skip it
@@ -2403,6 +2510,19 @@ class SplitBillDialog(QDialog):
                 if vd.exec() != QDialog.Accepted:
                     return
 
+            if self.remote_order:
+                if method == "EFECTIVO":
+                    try:
+                        cash_received = Decimal(str(cash_val or "0"))
+                        amount_decimal = Decimal(str(amount))
+                    except (ValueError, TypeError, ArithmeticError):
+                        AppMessageBox.warning(self, "Payment Failed", "Invalid cash amount entered.")
+                        return
+                    if cash_received < amount_decimal:
+                        AppMessageBox.warning(self, "Payment Failed", f"Insufficient cash for {guest['name']}.")
+                        return
+                continue
+
             # Synthetic cart
             ratio = Decimal(str(amount)) / Decimal(str(float(self.total)))
             synthetic_cart = []
@@ -2458,7 +2578,7 @@ class MesasDialog(QDialog):
         self._refresh_worker.finished.connect(self._on_refresh_done)
         self._refresh_thread.start()
 
-        self.setWindowTitle("Active Tables — Open Orders")
+        self.setWindowTitle("Active Tables - Open Orders")
         self.setMinimumSize(900, 560)
         self.setStyleSheet(STYLESHEET)
 
@@ -2481,11 +2601,12 @@ class MesasDialog(QDialog):
         root.addWidget(hdr)
 
         # Table
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["TABLE", "CHANNEL", "STATUS", "SUBTOTAL", "TOTAL", "DATE"]
+            ["TABLE", "CHANNEL", "STATUS", "SUBTOTAL", "TOTAL", "DATE", "ACTION"]
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
@@ -2546,23 +2667,32 @@ class MesasDialog(QDialog):
             empty_item = QTableWidgetItem("No active tables at this time.")
             empty_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(0, 0, empty_item)
-            self.table.setSpan(0, 0, 1, 6)
+            self.table.setSpan(0, 0, 1, 7)
             return
         for pedido in pedidos:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            mesa_val  = pedido.get("mesa") or "—"
-            canal     = pedido.get("canal_origen") or "—"
-            estado    = pedido.get("estado") or "—"
+            mesa_val  = pedido.get("mesa") or "-"
+            canal     = pedido.get("canal_origen") or "-"
+            estado    = pedido.get("estado") or "-"
             subtotal  = money(pedido.get('subtotal') or 0)
             total     = money(pedido.get('total_general') or 0)
             raw_fecha = pedido.get("fecha_creacion") or ""
-            fecha = str(raw_fecha)[:19].replace("T", " ") if raw_fecha else "—"
+            fecha = str(raw_fecha)[:19].replace("T", " ") if raw_fecha else "-"
 
             for col, val in enumerate([str(mesa_val), canal, estado, subtotal, total, fecha]):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row, col, item)
+
+            split_btn = QPushButton("SPLIT BILL")
+            split_btn.setObjectName("BtnSplit")
+            split_btn.setCursor(QCursor(Qt.PointingHandCursor))
+            split_btn.setMinimumWidth(104)
+            split_btn.clicked.connect(
+                lambda checked=False, r=row: self._open_split_for_row(r)
+            )
+            self.table.setCellWidget(row, 6, split_btn)
 
             if estado in ("POR_FACTURAR", "EN_ESPERA", "PENDIENTE"):
                 for col in range(6):
@@ -2581,6 +2711,11 @@ class MesasDialog(QDialog):
             AppMessageBox.warning(self, "Error", "Order has no UUID.")
             return
 
+        carrito = self._load_remote_cart(pedido)
+        if not carrito:
+            AppMessageBox.warning(self, "Empty Order", "The selected order has no importable items.")
+            return
+
         subtotal_val = float(pedido.get('subtotal') or 0.0)
         itbis_val    = float(pedido.get('total_impuestos') or 0.0)
         try:
@@ -2590,15 +2725,7 @@ class MesasDialog(QDialog):
         if prop_legal <= 0.0:
             prop_legal = subtotal_val * 0.10
 
-        extra_tip_input, ok_tip = AppInputDialog.getText(
-            self, "Extra Tip", "Enter extra tip amount (or leave blank for $0):"
-        )
-        if not ok_tip:
-            return
-        try:
-            prop_extra = float(extra_tip_input.strip()) if extra_tip_input.strip() else 0.0
-        except (ValueError, TypeError):
-            prop_extra = 0.0
+        prop_extra = 0.0
 
         total_val    = subtotal_val + itbis_val + prop_legal + prop_extra
         total_str    = money(total_val)
@@ -2625,7 +2752,6 @@ class MesasDialog(QDialog):
                 pedido['propina_legal']  = prop_legal
                 pedido['total_general']  = total_val
 
-                carrito = pedido.get("carrito", [])
                 mesa    = pedido.get("mesa", "")
                 cliente = f"Table {mesa}" if mesa and str(mesa).strip() else "TABLE CUSTOMER"
                 try:
@@ -2659,6 +2785,88 @@ class MesasDialog(QDialog):
                     self, "CORE Notification Failed",
                     f"Payment went through, but failed to notify CORE:\n{msg}"
                 )
+
+    def _load_remote_cart(self, pedido):
+        """Load and normalize item details for an Active Tables order."""
+        carrito = pedido.get("carrito") or []
+        uuid = pedido.get("factura_local_uuid")
+        if not carrito and uuid:
+            items = self.sincronizador.obtener_detalle_pedido(uuid)
+            carrito, warnings = self.pos.cargar_pedido_remoto(pedido, items)
+            # This flow is finalized explicitly by Active Tables, not by the
+            # normal local-cart billing path.
+            if hasattr(self.pos, "current_import_uuid"):
+                self.pos.current_import_uuid = None
+            if warnings:
+                AppMessageBox.warning(self, "Order Items", "\n".join(warnings))
+        return carrito
+
+    def _open_split_for_row(self, row):
+        if row < 0 or row >= len(self._pedidos):
+            return
+        pedido = self._pedidos[row]
+        uuid = pedido.get("factura_local_uuid")
+        if not uuid:
+            AppMessageBox.warning(self, "Error", "Order has no UUID.")
+            return
+
+        carrito = self._load_remote_cart(pedido)
+        if not carrito:
+            AppMessageBox.warning(self, "Empty Order", "The selected order has no importable items.")
+            return
+
+        cliente = f"Table {pedido.get('mesa')}" if pedido.get('mesa') else "TABLE CUSTOMER"
+        dialog = SplitBillDialog(
+            carrito=carrito,
+            pos_service=self.pos,
+            sincronizador=self.sincronizador,
+            ncf_tipo="CONSUMER",
+            ncf_num="B0200000001",
+            notas=f"Active table split - {uuid}",
+            cliente=cliente,
+            parent=self,
+            remote_order=True,
+        )
+        result = dialog.exec()
+        dialog.deleteLater()
+        if result != QDialog.Accepted:
+            return
+
+        ok, msg = self.sincronizador.notificar_facturacion_remota(uuid)
+        if not ok:
+            AppMessageBox.critical(
+                self, "CORE Notification Failed",
+                f"All portions were collected, but CORE could not close the order:\n{msg}"
+            )
+            return
+
+        try:
+            paid_pedido = dict(pedido)
+            paid_pedido["total_general"] = dialog.total
+            paid_pedido["propina_legal"] = dialog.prop_legal
+            paid_pedido["propina_extra"] = 0.0
+            self.pos.generar_ticket_desde_pedido(
+                pedido=paid_pedido,
+                carrito_raw=carrito,
+                ncf_tipo="CONSUMER",
+                ncf_num="B0200000001",
+                notas="Split Bill",
+                cliente=cliente,
+            )
+        except Exception as ticket_err:
+            print(f"Could not generate split ticket for {uuid}: {ticket_err}", flush=True)
+
+        AppMessageBox.information(
+            self, "Transaction Successful",
+            "Split bill completed, order closed, and ticket generated."
+        )
+        self.pos.descontar_stock_remoto(carrito)
+        self.refresh()
+        parent = self.parentWidget()
+        if parent and hasattr(parent, '_activate_stock_cooldown'):
+            parent._activate_stock_cooldown()
+        if parent and hasattr(parent, '_start_sync'):
+            parent._start_sync(parent._on_manual_sync_done, fetch_pedidos=True, full_sync=True)
 
 
 # ─── Supervisor Authorization Dialog (TOTP) ───────────────────────────────────
@@ -2801,12 +3009,12 @@ class SupervisorAuthDialog(QDialog):
 class EligibilityIdentifierDialog(QDialog):
     """
     Prompts the cashier to capture the customer's credential identifier
-    (e.g., Student ID, Military ID). No external validation is performed —
+    (e.g., Student ID, Military ID). No external validation is performed -
     the identifier is recorded for audit purposes only.
     """
     def __init__(self, promo_nombre: str, etiqueta: str, requiere: bool, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Eligibility — {promo_nombre}")
+        self.setWindowTitle(f"Eligibility - {promo_nombre}")
         self.setFixedWidth(460)
         self.setStyleSheet(STYLESHEET)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
@@ -3087,7 +3295,7 @@ class PromotionsDialog(QDialog):
         body_l.addWidget(code_sec)
 
         # ── Section: Manual Discount (Supervisor Required) ────────────────────
-        manual_sec = self._make_section("  MANUAL DISCOUNT  —  SUPERVISOR REQUIRED")
+        manual_sec = self._make_section("  MANUAL DISCOUNT  -  SUPERVISOR REQUIRED")
         manual_inner = manual_sec.findChild(QFrame, "PromoPanelSection")
         if manual_inner:
             # Removed manual_note to reduce text density
@@ -3302,7 +3510,7 @@ class PromotionsDialog(QDialog):
                 'supervisor_nombre': None,
                 'codigo_id': result.get('codigo_id'),
             })
-            self.lbl_code_result.setText(f" Code valid: {result.get('nombre','')}  —  {result['valor']}% discount")
+            self.lbl_code_result.setText(f" Code valid: {result.get('nombre','')}  -  {result['valor']}% discount")
             self.lbl_code_result.setStyleSheet("color:#00B4A0;font-size:12px;font-weight:700;background:transparent;")
             self.lbl_code_result.setVisible(True)
             self.inp_code.setEnabled(False)
@@ -3488,7 +3696,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1100, 750)
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.showMaximized()
-        self.setWindowTitle("MASTER POS SYSTEM — CASH TERMINAL")
+        self.setWindowTitle("MASTER POS SYSTEM - CASH TERMINAL")
+        self.setWindowIcon(QIcon(_desktop_icon_path()))
         self.setStyleSheet(STYLESHEET)
         
         main_widget = QWidget()
@@ -3508,7 +3717,7 @@ class MainWindow(QMainWindow):
         icon_lbl.setStyleSheet(f"font-size: 18px; color: {CLR_EMBER}; background: transparent;")
         title_layout.addWidget(icon_lbl)
         
-        title_lbl = QLabel("MASTER POS SYSTEM — CASH TERMINAL")
+        title_lbl = QLabel("MASTER POS SYSTEM - CASH TERMINAL")
         title_lbl.setStyleSheet(f"font-weight: 800; color: {CLR_EMBER}; font-size: 14px; background: transparent;")
         title_layout.addWidget(title_lbl)
         title_layout.addStretch()
@@ -3532,7 +3741,7 @@ class MainWindow(QMainWindow):
         btn_help.clicked.connect(self._show_help_panel)
         title_layout.addWidget(btn_help)
 
-        btn_min = QPushButton("—")
+        btn_min = QPushButton("-")
         btn_max = QPushButton("◻")
         btn_close = QPushButton("✕")
         for btn in (btn_min, btn_max, btn_close):
@@ -3736,7 +3945,7 @@ class MainWindow(QMainWindow):
         self._btn_hold_count.setFixedHeight(38)
         self._btn_hold_count.clicked.connect(self.do_resume_orders)
 
-        btn_hold_new = QPushButton("+ Hold Order")
+        btn_hold_new = QPushButton("HOLD ORDER")
         btn_hold_new.setObjectName("BtnHold")
         btn_hold_new.setFixedHeight(38)
         btn_hold_new.clicked.connect(self.do_hold_order)
@@ -3791,7 +4000,7 @@ class MainWindow(QMainWindow):
         # Category chips + Happy Hour
         self.cat_scroll = QScrollArea()
         self.cat_scroll.setWidgetResizable(True)
-        self.cat_scroll.setFixedHeight(52)
+        self.cat_scroll.setFixedHeight(40)
         self.cat_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.cat_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.cat_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
@@ -3799,7 +4008,7 @@ class MainWindow(QMainWindow):
         self.cat_container = QWidget()
         self.cat_container.setStyleSheet("background:transparent;")
         self.cat_layout = QHBoxLayout(self.cat_container)
-        self.cat_layout.setContentsMargins(0, 4, 0, 4)
+        self.cat_layout.setContentsMargins(0, 3, 0, 3)
         self.cat_layout.setSpacing(8)
         self.cat_scroll.setWidget(self.cat_container)
         left_l.addWidget(self.cat_scroll)
@@ -4083,18 +4292,29 @@ class MainWindow(QMainWindow):
                     discount_str = f"-${val}"
 
             btn = QPushButton()
+            btn.setText("")
             btn.setObjectName("BtnProductPromo" if nuevo_precio < float(p.precio_actual) else "BtnProduct")
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setFixedHeight(240)
 
             btn_layout = QVBoxLayout(btn)
-            btn_layout.setContentsMargins(8, 12, 8, 12)
-            btn_layout.setSpacing(6)
+            btn_layout.setContentsMargins(8, 6, 8, 6)
+            btn_layout.setSpacing(4)
             btn_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
             
             import os
             img_path = os.path.join(os.path.dirname(__file__), '..', 'images', f"product_{p.id_producto}.jpg")
             
+            # Keep the image in its own fixed-height slot so the product name
+            # can never be painted over or positioned inside the image.
+            image_slot = QWidget()
+            image_slot.setFixedHeight(86)
+            image_slot.setAttribute(Qt.WA_TransparentForMouseEvents)
+            image_slot.setStyleSheet("background: transparent;")
+            image_slot_layout = QVBoxLayout(image_slot)
+            image_slot_layout.setContentsMargins(0, 0, 0, 0)
+            image_slot_layout.setAlignment(Qt.AlignCenter)
+
             if os.path.exists(img_path):
                 from PySide6.QtGui import QPainter, QPainterPath
                 img_lbl = QLabel()
@@ -4121,22 +4341,35 @@ class MainWindow(QMainWindow):
                     
                     img_lbl.setPixmap(out_pix)
                 img_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
-                img_lbl.setStyleSheet("background: transparent;")
-                btn_layout.addWidget(img_lbl, alignment=Qt.AlignCenter)
+                img_lbl.setStyleSheet(
+                    "background: rgba(255,255,255,0.03);"
+                    "border: 1px solid rgba(148,163,184,0.18);"
+                    "border-radius: 12px;"
+                )
+                image_slot_layout.addWidget(img_lbl, alignment=Qt.AlignCenter)
             else:
                 placeholder = QLabel()
                 placeholder.setFixedSize(80, 80)
                 placeholder.setAttribute(Qt.WA_TransparentForMouseEvents)
-                placeholder.setStyleSheet("background: transparent;")
-                btn_layout.addWidget(placeholder, alignment=Qt.AlignCenter)
+                placeholder.setStyleSheet(
+                    "background: rgba(255,255,255,0.03);"
+                    "border: 1px solid rgba(148,163,184,0.18);"
+                    "border-radius: 12px;"
+                )
+                image_slot_layout.addWidget(placeholder, alignment=Qt.AlignCenter)
+
+            btn_layout.addWidget(image_slot, alignment=Qt.AlignCenter)
+
+            btn_layout.addSpacing(2)
             
             # Product Name
             name_lbl = QLabel(p.nombre)
-            name_lbl.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+            name_lbl.setAlignment(Qt.AlignCenter)
             name_lbl.setWordWrap(True)
-            name_lbl.setFixedHeight(36)
+            name_lbl.setMinimumHeight(40)
+            name_lbl.setMaximumHeight(40)
             name_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
-            name_lbl.setStyleSheet("background: transparent; font-weight: 900; font-size: 13px; margin-top: 4px;")
+            name_lbl.setStyleSheet("background: transparent; font-weight: 900; font-size: 13px;")
             btn_layout.addWidget(name_lbl)
             
             # Price
@@ -4147,14 +4380,16 @@ class MainWindow(QMainWindow):
                 
             price_lbl = QLabel(price_text)
             price_lbl.setAlignment(Qt.AlignCenter)
-            price_lbl.setFixedHeight(24)
+            price_lbl.setMinimumHeight(24)
+            price_lbl.setMaximumHeight(24)
             price_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
             price_lbl.setStyleSheet("background: transparent; font-weight: 800;")
             btn_layout.addWidget(price_lbl)
             
             # Footer: Stock and Discount
             footer_widget = QWidget()
-            footer_widget.setFixedHeight(20)
+            footer_widget.setMinimumHeight(20)
+            footer_widget.setMaximumHeight(20)
             footer_widget.setAttribute(Qt.WA_TransparentForMouseEvents)
             footer_widget.setStyleSheet("background: transparent;")
             footer_layout = QHBoxLayout(footer_widget)
@@ -4220,7 +4455,7 @@ class MainWindow(QMainWindow):
         # ALL chip
         btn_all = QPushButton("ALL")
         btn_all.setObjectName("BtnCatActive")
-        btn_all.setStyleSheet(f"background-color: {CLR_CHAMPAGNE}; color: {CLR_BG}; border: 1px solid {CLR_CHAMPAGNE}; border-radius: 20px; font-weight: 700;")
+        btn_all.setStyleSheet(f"background-color: {CLR_CHAMPAGNE}; color: {CLR_BG}; border: 1px solid {CLR_CHAMPAGNE}; border-radius: 16px; padding: 0 14px; min-height: 30px; max-height: 30px; font-size: 11px; font-weight: 700;")
         btn_all.clicked.connect(lambda: self._set_category(None, btn_all))
         self.cat_layout.addWidget(btn_all)
         self._active_cat_btn = btn_all
@@ -4248,7 +4483,7 @@ class MainWindow(QMainWindow):
             self._active_cat_btn.style().unpolish(self._active_cat_btn)
             self._active_cat_btn.style().polish(self._active_cat_btn)
 
-            target_btn.setStyleSheet(f"background-color: {CLR_CHAMPAGNE}; color: {CLR_BG}; border: 1px solid {CLR_CHAMPAGNE}; border-radius: 20px; font-weight: 700;")
+            target_btn.setStyleSheet(f"background-color: {CLR_CHAMPAGNE}; color: {CLR_BG}; border: 1px solid {CLR_CHAMPAGNE}; border-radius: 16px; padding: 0 14px; min-height: 30px; max-height: 30px; font-size: 11px; font-weight: 700;")
             self._active_cat_btn = target_btn
 
     def _set_category(self, cat_name, btn):
@@ -4258,7 +4493,7 @@ class MainWindow(QMainWindow):
             self._active_cat_btn.style().unpolish(self._active_cat_btn)
             self._active_cat_btn.style().polish(self._active_cat_btn)
             
-        btn.setStyleSheet(f"background-color: {CLR_CHAMPAGNE}; color: {CLR_BG}; border: 1px solid {CLR_CHAMPAGNE}; border-radius: 20px; font-weight: 700;")
+        btn.setStyleSheet(f"background-color: {CLR_CHAMPAGNE}; color: {CLR_BG}; border: 1px solid {CLR_CHAMPAGNE}; border-radius: 16px; padding: 0 14px; min-height: 30px; max-height: 30px; font-size: 11px; font-weight: 700;")
         self._active_cat_btn = btn
         self.load_catalog(cat_name)
 
@@ -4281,7 +4516,7 @@ class MainWindow(QMainWindow):
                 self.hh_discount_lbl.setVisible(self.happy_hour_active)
                 if self.happy_hour_active:
                     self.hh_discount_lbl.setText(
-                        f"HAPPY HOUR  —  {int(self.happy_hour_discount * 100)}% DISCOUNT APPLIED"
+                        f"HAPPY HOUR  -  {int(self.happy_hour_discount * 100)}% DISCOUNT APPLIED"
                     )
             self.update_totals()
 
@@ -4340,7 +4575,7 @@ class MainWindow(QMainWindow):
             minus_btn.clicked.connect(
                 lambda checked, r=row: self.decrement_cart_item(r)
             )
-            self.table.setCellWidget(row, 3, minus_btn)
+            self.table.setCellWidget(row, 3, self._make_cart_minus_button())
 
             # Instructions button (col 4)
             notes_btn = QPushButton("+ Instructions")
@@ -4349,7 +4584,7 @@ class MainWindow(QMainWindow):
             notes_btn.clicked.connect(
                 lambda checked, r=row: self.open_modifier_for_row(r)
             )
-            self.table.setCellWidget(row, 4, notes_btn)
+            self.table.setCellWidget(row, 4, self._make_cart_notes_button())
 
             self.carrito.append({
                 'id': p.id_producto,
@@ -4363,7 +4598,45 @@ class MainWindow(QMainWindow):
                 'id_categoria': p.id_categoria,
             })
 
+            self.update_totals()
+
         self.update_totals()
+
+    def _row_for_cell_widget(self, widget, column):
+        if widget is None:
+            return -1
+        for row in range(self.table.rowCount()):
+            if self.table.cellWidget(row, column) is widget:
+                return row
+        return -1
+
+    def _make_cart_minus_button(self):
+        minus_btn = QPushButton("−")
+        minus_btn.setObjectName("BtnMinusQty")
+        minus_btn.setFixedSize(28, 28)
+        minus_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        minus_btn.clicked.connect(
+            lambda checked=False, button=minus_btn: self.decrement_cart_item(
+                self._row_for_cell_widget(button, 3)
+            )
+        )
+        return minus_btn
+
+    def _make_cart_notes_button(self, item_data=None):
+        notes_btn = QPushButton("+ Instructions")
+        notes_btn.setObjectName("BtnNotes")
+        notes_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        notas = (item_data or {}).get('notas_item', [])
+        if notas:
+            text = ', '.join(notas)
+            notes_btn.setText(text[:18] + '…' if len(text) > 18 else text)
+            notes_btn.setObjectName("BtnNotesActive")
+        notes_btn.clicked.connect(
+            lambda checked=False, button=notes_btn: self.open_modifier_for_row(
+                self._row_for_cell_widget(button, 4)
+            )
+        )
+        return notes_btn
 
     def _reset_btn_style(self, btn, orig_style):
         try:
@@ -4502,7 +4775,7 @@ class MainWindow(QMainWindow):
                 "Use the [−] button in each cart row to reduce qty by 1.",
             ]),
             ("  HOLD & RESUME ORDER", [
-                "Click '+ Hold Order' to pause and save the current cart.",
+                "Click 'HOLD ORDER' to pause and save the current cart.",
                 "Click 'HELD (n)' in the header to resume a held order.",
             ]),
             ("  PROMOTIONS & DISCOUNTS", [
@@ -4622,7 +4895,7 @@ class MainWindow(QMainWindow):
             minus_btn.setFixedSize(28, 28)
             minus_btn.setCursor(QCursor(Qt.PointingHandCursor))
             minus_btn.clicked.connect(lambda checked, r=row: self.decrement_cart_item(r))
-            self.table.setCellWidget(row, 3, minus_btn)
+            self.table.setCellWidget(row, 3, self._make_cart_minus_button())
 
             # Instructions button (col 4)
             notes_btn = QPushButton("+ Instructions")
@@ -4633,7 +4906,7 @@ class MainWindow(QMainWindow):
                 notes_btn.setText(text[:18] + '…' if len(text) > 18 else text)
                 notes_btn.setObjectName("BtnNotesActive")
             notes_btn.clicked.connect(lambda checked, r=row: self.open_modifier_for_row(r))
-            self.table.setCellWidget(row, 4, notes_btn)
+            self.table.setCellWidget(row, 4, self._make_cart_notes_button(item))
 
         # Restore billing info
         self.txt_cliente.setText(order.get('cliente', ''))
@@ -5029,7 +5302,7 @@ class MainWindow(QMainWindow):
             minus_btn.setFixedSize(28, 28)
             minus_btn.setCursor(QCursor(Qt.PointingHandCursor))
             minus_btn.clicked.connect(lambda checked, r=row: self.decrement_cart_item(r))
-            self.table.setCellWidget(row, 3, minus_btn)
+            self.table.setCellWidget(row, 3, self._make_cart_minus_button())
 
             # Instructions button (col 4)
             notes_btn = QPushButton("+ Instructions")
@@ -5040,13 +5313,13 @@ class MainWindow(QMainWindow):
                 notes_btn.setText(text[:18] + '…' if len(text) > 18 else text)
                 notes_btn.setObjectName("BtnNotesActive")
             notes_btn.clicked.connect(lambda checked, r=row: self.open_modifier_for_row(r))
-            self.table.setCellWidget(row, 4, notes_btn)
+            self.table.setCellWidget(row, 4, self._make_cart_notes_button(item))
         self.update_totals()
         if mesa and str(mesa).strip():
             self.txt_cliente.setText(f"Table {mesa}")
         self.show_info(
             "Order Imported",
-            f"Remote order loaded — {len(carrito)} item(s).\n"
+            f"Remote order loaded - {len(carrito)} item(s).\n"
             "Select NCF type and payment method, then press BILL."
         )
 
@@ -5099,6 +5372,8 @@ class MainWindow(QMainWindow):
                 ok, _ = self.sincronizador.autenticar(cached_id, cached_pw)
                 if ok:
                     print("[AutoSync] API token acquired on retry.", flush=True)
+            if not self.sincronizador.token:
+                return
         fetch   = (self._auto_sync_counter % 6 == 0)
         do_full = (self._auto_sync_counter == 1 or self._auto_sync_counter % 60 == 0)
         self._start_sync(self._on_auto_sync_done, fetch_pedidos=fetch, full_sync=do_full)
