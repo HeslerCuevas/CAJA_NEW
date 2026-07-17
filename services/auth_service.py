@@ -4,6 +4,26 @@ from sqlalchemy import or_
 from db.connection import SessionLocal
 from models.entities import UsuarioLocal
 from services.sync_service import SyncService
+import requests
+
+
+AZURE_URL = "http://localhost:8001"
+## CHANGE TO THIS WHEN IN PRODUCTION:
+## integration-api-bar-gsd2h5d0bmbddfh6.eastus2-01.azurewebsites.net
+LOCAL_URL = "http://localhost:8001"
+
+
+def get_active_base_url():
+    try:
+        # Check Azure with a short 2-second connection timeout
+        response = requests.head(AZURE_URL, timeout=2.0)
+        if response.status_code < 400:
+            print("🚀 POS pointing to Cloud Integration Gateway")
+            return AZURE_URL
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        print("🔌 POS pointing to Local Server")
+
+    return LOCAL_URL
 
 class AuthService:
     current_user_id = None
@@ -14,8 +34,8 @@ class AuthService:
     # Cached credentials for background token retry (never persisted to disk)
     _last_identificador = None
     _last_password = None
-    
-    api_base_url = "http://localhost:8001" 
+
+    api_base_url = get_active_base_url()
 
     @classmethod
     def login_maestro(cls, identificador, password):

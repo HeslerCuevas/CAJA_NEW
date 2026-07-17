@@ -1,9 +1,21 @@
 import sys
+import os
 from pathlib import Path
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+def _safe_output_stream(stream):
+    # PyInstaller windowed apps set stdout/stderr to None.  The application
+    # contains diagnostic print calls, so leaving them unset can abort a live
+    # refresh before its HTTP request is sent.
+    if stream is None:
+        return open(os.devnull, "w", encoding="utf-8", errors="replace")
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    return stream
+
+
+sys.stdout = _safe_output_stream(sys.stdout)
+sys.stderr = _safe_output_stream(sys.stderr)
 
 if sys.platform.startswith("win") and getattr(sys, "frozen", False):
     import ctypes

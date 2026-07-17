@@ -256,6 +256,11 @@ QPushButton#BtnSplit {{
     letter-spacing: 0.5px;
 }}
 QPushButton#BtnSplit:hover {{ background-color: rgba(255,107,0,0.15); border-color: {CLR_EMBER}; }}
+QPushButton#BtnSplit:disabled {{
+    background-color: {CLR_SURFACE_HIGH};
+    color: {CLR_TEXT_DIM};
+    border-color: rgba(255,255,255,0.04);
+}}
 
 /* Category chip — inactive */
 QPushButton#BtnCat {{
@@ -896,7 +901,7 @@ class StockWorker(QObject):
 
 
 class _FetchOrdersWorker(QObject):
-    finished = Signal(list)
+    finished = Signal(bool, list, str)
     request = Signal()
 
     def __init__(self, sincronizador):
@@ -909,12 +914,15 @@ class _FetchOrdersWorker(QObject):
             return
         self._busy = True
         try:
-            pedidos = self.sincronizador.obtener_cuentas_abiertas() or []
+            ok, pedidos, error = self.sincronizador.obtener_cuentas_abiertas()
         except Exception as e:
             print(f"Fetch orders error: {e}", flush=True)
+            ok = False
             pedidos = []
-        self._busy = False
-        self.finished.emit(pedidos)
+            error = str(e)
+        finally:
+            self._busy = False
+        self.finished.emit(ok, pedidos, error)
 
 
 # ─── Custom Message Box ───────────────────────────────────────────────────────
@@ -1519,7 +1527,9 @@ class SplitBillDialog(QDialog):
 
     def __init__(self, carrito, pos_service, sincronizador,
                  ncf_tipo, ncf_num, notas, cliente,
-                 happy_hour_discount=0.0, parent=None, remote_order=False):
+                 happy_hour_discount=0.0, propina_extra=0.0,
+                 breakdown_override=None, parent=None, remote_order=False,
+                 remote_finalizer=None):
         super().__init__(parent)
         self.setWindowTitle("Split Bill")
         self.setMinimumSize(860, 620)
@@ -1539,10 +1549,23 @@ class SplitBillDialog(QDialog):
         # original remote order once all portions are paid.  This prevents the
         # split from creating duplicate CORE orders.
         self.remote_order = remote_order
+        self.remote_finalizer = remote_finalizer
+        self._remote_custom_collected = False
+        self._remote_finalizing = False
 
-        self.sub, self.imp, self.prop_legal, self.total = pos_service.calcular_totales(
-            carrito, global_discount_pct=happy_hour_discount
+        calc_sub, calc_imp, calc_prop_legal, calc_total = pos_service.calcular_totales(
+            carrito,
+            propina_extra=propina_extra,
+            global_discount_pct=happy_hour_discount,
         )
+        override = breakdown_override or {}
+        self.sub = Decimal(str(override.get("subtotal", calc_sub) or 0))
+        self.imp = Decimal(str(override.get("itbis", calc_imp) or 0))
+        self.prop_legal = Decimal(str(override.get("propina_legal", calc_prop_legal) or 0))
+        self.prop_extra = Decimal(str(override.get("propina_extra", propina_extra) or 0))
+        self.total = Decimal(str(
+            override.get("total", self.sub + self.imp + self.prop_legal + self.prop_extra) or 0
+        ))
 
         # Equal split state
         self._eq_guests = 2
@@ -1564,6 +1587,64 @@ class SplitBillDialog(QDialog):
         self._current_mode = 0
 
         self._build_ui()
+
+    def _money_decimal(self, value):
+        try:
+            return Decimal(str(value or 0))
+        except (ValueError, TypeError, ArithmeticError):
+            return Decimal("0")
+
+    def _round_money(self, value):
+        return self._money_decimal(value).quantize(Decimal("0.01"))
+
+    def _guest_items_base_amount(self, items):
+        if not items:
+            return Decimal("0")
+        guest_sub, _, _, _ = self.pos.calcular_totales(
+            items,
+            happy_hour_discount=self.hh_discount,
+        )
+        guest_sub = self._money_decimal(guest_sub)
+        if guest_sub > Decimal("0"):
+            return guest_sub
+
+        fallback = Decimal("0")
+        for item in items:
+            fallback += self._money_decimal(item.get('precio')) * self._money_decimal(item.get('cant'))
+        return fallback
+
+    def _allocate_component_for_guest(self, component_total, guest_idx):
+        component_total = self._money_decimal(component_total)
+        guest_indices = [idx for idx, guest in enumerate(self._bi_guests) if guest['items']]
+        if guest_idx not in guest_indices:
+            return Decimal("0.00")
+
+        bases = {idx: self._guest_items_base_amount(self._bi_guests[idx]['items']) for idx in guest_indices}
+        total_base = sum(bases.values(), Decimal("0"))
+        if total_base <= Decimal("0"):
+            bases = {idx: Decimal("1") for idx in guest_indices}
+            total_base = Decimal(str(len(guest_indices)))
+
+        running = Decimal("0.00")
+        last_guest = guest_indices[-1]
+        for idx in guest_indices:
+            if idx == last_guest:
+                portion = component_total - running
+            else:
+                portion = self._round_money(component_total * bases[idx] / total_base)
+                running += portion
+            if idx == guest_idx:
+                return self._round_money(portion)
+
+        return Decimal("0.00")
+
+    def _bi_guest_breakdown(self, g_idx):
+        sub = self._allocate_component_for_guest(self.sub, g_idx)
+        imp = self._allocate_component_for_guest(self.imp, g_idx)
+        prop_legal = self._allocate_component_for_guest(self.prop_legal, g_idx)
+        prop_extra = self._allocate_component_for_guest(self.prop_extra, g_idx)
+        total = sub + imp + prop_legal + prop_extra
+        return sub, imp, prop_legal, prop_extra, total
 
     # ── UI Build ──────────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -1600,11 +1681,15 @@ class SplitBillDialog(QDialog):
         sum_l.setContentsMargins(20, 12, 20, 12)
         sum_l.setSpacing(24)
 
-        for label, val in [
+        summary_items = [
             ("SUBTOTAL", money(self.sub)),
             ("ITBIS (18%)", money(self.imp)),
             ("LEGAL TIP (10%)", money(self.prop_legal)),
-        ]:
+        ]
+        if self.prop_extra > Decimal("0.00"):
+            summary_items.append(("EXTRA TIP", money(self.prop_extra)))
+
+        for label, val in summary_items:
             col = QVBoxLayout()
             col.setSpacing(2)
             col.addWidget(_lbl(label, "LblMeta"))
@@ -1876,9 +1961,7 @@ class SplitBillDialog(QDialog):
                 item.widget().deleteLater()
 
         for g_idx, guest in enumerate(self._bi_guests):
-            g_total = sum(
-                float(it['precio']) * it['cant'] for it in guest['items']
-            )
+            g_sub, g_imp, g_prop, g_extra, g_total = self._bi_guest_breakdown(g_idx)
             paid = g_idx in self._bi_paid
             selected = g_idx == self._bi_selected_guest
 
@@ -1916,6 +1999,20 @@ class SplitBillDialog(QDialog):
             g_hdr.addStretch()
             g_hdr.addWidget(g_total_lbl)
             panel_l.addLayout(g_hdr)
+
+            if guest['items']:
+                breakdown_parts = [
+                    f"Subtotal {money(g_sub)}",
+                    f"ITBIS {money(g_imp)}",
+                    f"Legal tip {money(g_prop)}",
+                ]
+                if g_extra > Decimal("0.00"):
+                    breakdown_parts.append(f"Extra tip {money(g_extra)}")
+                breakdown_lbl = _lbl(" | ".join(breakdown_parts), "LblMeta")
+                breakdown_lbl.setStyleSheet(
+                    f"color:{CLR_TEXT_DIM};font-size:11px;background:transparent;"
+                )
+                panel_l.addWidget(breakdown_lbl)
 
 
             # Items list
@@ -2052,16 +2149,16 @@ class SplitBillDialog(QDialog):
             if not ok2:
                 return
 
+        g_sub, g_imp, g_prop, g_extra, g_total = self._bi_guest_breakdown(g_idx)
+
         # Verifone dialog for card
         if method == "TARJETA":
-            g_sub, g_imp, g_prop, g_total = self.pos.calcular_totales(
-                guest['items'], happy_hour_discount=self.hh_discount
-            )
             vd = VerifoneDialog(
                 money(g_total),
                 subtotal_str=money(g_sub),
                 itbis_str=money(g_imp),
                 legaltip_str=money(g_prop),
+                extratip_str=money(g_extra),
                 parent=self
             )
             if vd.exec() != QDialog.Accepted:
@@ -2071,16 +2168,13 @@ class SplitBillDialog(QDialog):
             if method == "EFECTIVO":
                 try:
                     cash_received = Decimal(str(cash_val or "0"))
-                    guest_total = Decimal(str(self.pos.calcular_totales(
-                        guest['items'], happy_hour_discount=self.hh_discount
-                    )[3]))
                 except (ValueError, TypeError, ArithmeticError):
                     AppMessageBox.warning(self, "Payment Failed", "Invalid cash amount entered.")
                     return
-                if cash_received < guest_total:
+                if cash_received < g_total:
                     AppMessageBox.warning(self, "Payment Failed", "Insufficient cash.")
                     return
-                change_text = f"\nChange to return: {money(float(cash_received - guest_total))}" if cash_received - guest_total > Decimal("0.009") else ""
+                change_text = f"\nChange to return: {money(float(cash_received - g_total))}" if cash_received - g_total > Decimal("0.009") else ""
             else:
                 change_text = ""
             self._bi_paid.add(g_idx)
@@ -2092,8 +2186,10 @@ class SplitBillDialog(QDialog):
             self._update_footer()
             guests_with_items = [i for i, g in enumerate(self._bi_guests) if g['items']]
             if guests_with_items and all(i in self._bi_paid for i in guests_with_items) and not self._bi_unassigned:
-                AppMessageBox.information(self, "Split Complete", "All guests have paid! The bill is fully settled.")
-                self.accept()
+                # The portions are collected, but the original mobile order
+                # is only settled after the Gateway confirms its closure.
+                # On a transient failure the dialog stays open with a retry.
+                self._finalize_remote_order()
             return
 
         cambio, msg = self.pos.procesar_venta(
@@ -2106,6 +2202,7 @@ class SplitBillDialog(QDialog):
             cliente=f"{self.cliente} ({guest['name']})",
             sincronizador=self.sincronizador,
             deduct_stock=True,
+            propina_extra=float(g_extra),
             happy_hour_discount=self.hh_discount,
         )
         if cambio is not None:
@@ -2293,12 +2390,64 @@ class SplitBillDialog(QDialog):
             )
 
     # ── Footer update ─────────────────────────────────────────────────────────
+    def _remote_split_ready_to_close(self):
+        if not self.remote_order:
+            return False
+        if self._current_mode == 0:
+            return len(self._eq_paid) == self._eq_guests
+        if self._current_mode == 1:
+            guests_with_items = [i for i, g in enumerate(self._bi_guests) if g['items']]
+            return bool(guests_with_items) and not self._bi_unassigned and all(
+                i in self._bi_paid for i in guests_with_items
+            )
+        if self._current_mode == 2:
+            return self._remote_custom_collected
+        return False
+
+    def _finalize_remote_order(self):
+        """Close the one remote order only after every split portion is collected."""
+        if not self.remote_order or self._remote_finalizing:
+            return False
+        if not callable(self.remote_finalizer):
+            AppMessageBox.warning(
+                self,
+                "Cannot Close Order",
+                "The remote payment finalizer is unavailable. The order remains open.",
+            )
+            return False
+
+        self._remote_finalizing = True
+        try:
+            ok, msg = self.remote_finalizer()
+        except Exception as exc:
+            ok, msg = False, f"Could not close the remote order: {exc}"
+        finally:
+            self._remote_finalizing = False
+
+        if ok:
+            self.accept()
+            return True
+
+        AppMessageBox.warning(
+            self,
+            "Order Still Open",
+            "All recorded portions are retained in this dialog, but the order "
+            f"was not closed. Retry closing it before dismissing this window.\n{msg}",
+        )
+        self._update_footer()
+        return False
+
     def _update_footer(self):
         mode = self._current_mode
 
         if mode == 0:  # Equal
             n_paid = len(self._eq_paid)
             n_total = self._eq_guests
+            if self.remote_order and self._remote_split_ready_to_close():
+                self.lbl_progress.setText("All portions collected — close the remote order")
+                self.btn_pay.setText("CLOSE ORDER & NOTIFY CUSTOMER")
+                self.btn_pay.setEnabled(True)
+                return
             per_guest = float(self.total) / n_total
             last_amt = float(self.total) - per_guest * (n_total - 1)
             g_idx = self._eq_selected
@@ -2317,6 +2466,11 @@ class SplitBillDialog(QDialog):
         elif mode == 1:  # By Item
             guests_with_items = [i for i, g in enumerate(self._bi_guests) if g['items']]
             n_paid = len([i for i in guests_with_items if i in self._bi_paid])
+            if self.remote_order and self._remote_split_ready_to_close():
+                self.lbl_progress.setText("All portions collected — close the remote order")
+                self.btn_pay.setText("CLOSE ORDER & NOTIFY CUSTOMER")
+                self.btn_pay.setEnabled(True)
+                return
             self.lbl_progress.setText(
                 f"Unassigned: {len(self._bi_unassigned)} items  •  "
                 f"Paid: {n_paid}/{len(guests_with_items)} guests"
@@ -2325,6 +2479,11 @@ class SplitBillDialog(QDialog):
             self.btn_pay.setEnabled(False)
 
         elif mode == 2:  # Custom
+            if self.remote_order and self._remote_custom_collected:
+                self.lbl_progress.setText("All portions collected — close the remote order")
+                self.btn_pay.setText("CLOSE ORDER & NOTIFY CUSTOMER")
+                self.btn_pay.setEnabled(True)
+                return
             used = 0.0
             for g in self._cu_guests:
                 try:
@@ -2338,6 +2497,9 @@ class SplitBillDialog(QDialog):
             self.btn_pay.setEnabled(abs(remaining) < 0.01 and all_filled)
 
     def _on_pay_click(self):
+        if self.remote_order and self._remote_split_ready_to_close():
+            self._finalize_remote_order()
+            return
         if self._current_mode == 0:
             self._eq_pay_guest(self._eq_selected)
         elif self._current_mode == 2:
@@ -2408,8 +2570,9 @@ class SplitBillDialog(QDialog):
             self._rebuild_eq_cards()
             self._update_footer()
             if len(self._eq_paid) == self._eq_guests:
-                AppMessageBox.information(self, "Split Complete", "All guests have paid! The bill is fully settled.")
-                self.accept()
+                # Keep this dialog open until the remote order is actually
+                # closed; a failed attempt leaves a safe retry in the footer.
+                self._finalize_remote_order()
             return
 
         # Build a synthetic single-item cart for accounting
@@ -2474,6 +2637,10 @@ class SplitBillDialog(QDialog):
     # ── Custom split confirm ──────────────────────────────────────────────────
     def _cu_confirm_all(self):
         """Process each guest's custom amount as a separate invoice."""
+        if self.remote_order and self._remote_custom_collected:
+            self._finalize_remote_order()
+            return
+
         amounts = []
         for g in self._cu_guests:
             try:
@@ -2554,6 +2721,11 @@ class SplitBillDialog(QDialog):
                 return
             first_done = True
 
+        if self.remote_order:
+            self._remote_custom_collected = True
+            self._finalize_remote_order()
+            return
+
         AppMessageBox.information(
             self, "Split Complete",
             "All custom split payments have been processed successfully!"
@@ -2570,6 +2742,8 @@ class MesasDialog(QDialog):
         self.sincronizador = sincronizador
         self.pos = pos_service
         self._pedidos = []
+        self._refresh_in_flight = False
+        self._refresh_pending = False
 
         self._refresh_thread = QThread(self)
         self._refresh_worker = _FetchOrdersWorker(self.sincronizador)
@@ -2577,10 +2751,37 @@ class MesasDialog(QDialog):
         self._refresh_worker.request.connect(self._refresh_worker.run)
         self._refresh_worker.finished.connect(self._on_refresh_done)
         self._refresh_thread.start()
+        self._auto_refresh = QTimer(self)
+        self._auto_refresh.setInterval(8000)
+        self._auto_refresh.timeout.connect(lambda: self.refresh() if self.isVisible() else None)
+        self._auto_refresh.start()
 
+        self.setObjectName("ActiveTablesDialog")
         self.setWindowTitle("Active Tables - Open Orders")
-        self.setMinimumSize(900, 560)
-        self.setStyleSheet(STYLESHEET)
+        self.setMinimumSize(1120, 650)
+        self.resize(1240, 720)
+        self.setStyleSheet(STYLESHEET + f"""
+            QDialog#ActiveTablesDialog {{ background-color: {CLR_BG}; }}
+            QTableWidget#ActiveOrdersTable {{
+                background-color: {CLR_SURFACE};
+                border: 1px solid {CLR_BORDER};
+                border-radius: 14px;
+                font-size: 14px;
+                alternate-background-color: rgba(38,42,49,0.38);
+            }}
+            QTableWidget#ActiveOrdersTable::item {{ padding: 12px 10px; }}
+            QTableWidget#ActiveOrdersTable::item:selected {{
+                background-color: rgba(255,107,0,0.12);
+                color: {CLR_TEXT};
+            }}
+            QWidget#ActiveOrderActions {{ background: transparent; }}
+            QLabel#ActiveCount {{
+                color: {CLR_EMBER}; background: rgba(255,107,0,0.12);
+                border: 1px solid rgba(255,107,0,0.35); border-radius: 12px;
+                padding: 5px 10px; font-size: 12px; font-weight: 800;
+            }}
+            QLabel#LiveStatus {{ color: {CLR_SUCCESS}; font-size: 12px; font-weight: 700; }}
+        """)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -2589,30 +2790,59 @@ class MesasDialog(QDialog):
         # Header
         hdr = QFrame()
         hdr.setObjectName("HeaderFrame")
-        hdr.setFixedHeight(64)
+        hdr.setFixedHeight(88)
         hdr_l = QHBoxLayout(hdr)
         hdr_l.setContentsMargins(24, 0, 24, 0)
-        title = _lbl("ACTIVE TABLES", "LblTitle")
-        hint = _lbl("Double-click a row to import and pay an order", "LblMeta")
-        hdr_l.addWidget(title)
-        hdr_l.addSpacing(20)
-        hdr_l.addWidget(hint)
+        title_col = QVBoxLayout()
+        title_col.setSpacing(4)
+        title_col.addWidget(_lbl("ACTIVE TABLES", "LblTitle"))
+        title_col.addWidget(_lbl("Live mobile orders and payment requests", "LblMeta"))
+        hdr_l.addLayout(title_col)
         hdr_l.addStretch()
+        self.lbl_live = _lbl("● LIVE", "LiveStatus")
+        self.lbl_count = _lbl("0 ORDERS", "ActiveCount")
+        self.lbl_live.setFixedHeight(32)
+        self.lbl_count.setFixedHeight(32)
+        self.lbl_live.setAlignment(Qt.AlignCenter)
+        self.lbl_count.setAlignment(Qt.AlignCenter)
+        hdr_l.addWidget(self.lbl_live)
+        hdr_l.addSpacing(12)
+        hdr_l.addWidget(self.lbl_count)
         root.addWidget(hdr)
 
         # Table
         self.table = QTableWidget(0, 7)
+        self.table.setObjectName("ActiveOrdersTable")
         self.table.setHorizontalHeaderLabels(
             ["TABLE", "CHANNEL", "STATUS", "SUBTOTAL", "TOTAL", "DATE", "ACTION"]
         )
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        header = self.table.horizontalHeader()
+        header.setMinimumHeight(50)
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.Fixed)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        header.setSectionResizeMode(6, QHeaderView.Fixed)
+        self.table.setColumnWidth(0, 120)
+        self.table.setColumnWidth(1, 105)
+        self.table.setColumnWidth(2, 175)
+        self.table.setColumnWidth(3, 120)
+        self.table.setColumnWidth(4, 120)
+        self.table.setColumnWidth(6, 300)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setDefaultSectionSize(66)
         self.table.verticalHeader().hide()
         self.table.doubleClicked.connect(self._on_double_click)
-        root.addWidget(self.table, 1)
+        table_shell = QFrame()
+        table_shell_l = QVBoxLayout(table_shell)
+        table_shell_l.setContentsMargins(20, 12, 20, 16)
+        table_shell_l.addWidget(self.table)
+        root.addWidget(table_shell, 1)
 
         # Footer
         foot = QFrame()
@@ -2622,39 +2852,63 @@ class MesasDialog(QDialog):
         foot.setFixedHeight(60)
         foot_l = QHBoxLayout(foot)
         foot_l.setContentsMargins(20, 0, 20, 0)
-        btn_refresh = QPushButton("Refresh")
-        btn_refresh.setObjectName("BtnChampagne")
-        btn_refresh.clicked.connect(self.refresh)
+        self.btn_refresh = QPushButton("REFRESH NOW")
+        self.btn_refresh.setObjectName("BtnChampagne")
+        self.btn_refresh.setFixedHeight(40)
+        self.btn_refresh.clicked.connect(self.refresh)
+        self.lbl_refresh_status = _lbl("Updates automatically every 8 seconds", "LblMeta")
         
         btn_close = QPushButton("Dismiss")
         btn_close.setObjectName("BtnDanger")
         btn_close.setFixedWidth(100)
         btn_close.clicked.connect(self.hide)
-        foot_l.addWidget(btn_refresh)
+        foot_l.addWidget(self.btn_refresh)
+        foot_l.addSpacing(14)
+        foot_l.addWidget(self.lbl_refresh_status)
         foot_l.addStretch()
         foot_l.addWidget(btn_close)
         root.addWidget(foot)
 
     def cleanup_thread(self):
+        if hasattr(self, "_auto_refresh"):
+            self._auto_refresh.stop()
         if self._refresh_thread.isRunning():
             self._refresh_thread.quit()
             self._refresh_thread.wait(2000)
 
     def refresh(self):
-        self.table.setRowCount(0)
-        self.table.insertRow(0)
-        loading = QTableWidgetItem("Loading...")
-        loading.setTextAlignment(Qt.AlignCenter)
-        self.table.setItem(0, 0, loading)
+        if self._refresh_in_flight:
+            self._refresh_pending = True
+            return
+        self._refresh_in_flight = True
+        self.btn_refresh.setEnabled(False)
+        self.btn_refresh.setText("UPDATING...")
+        self.lbl_refresh_status.setText("Checking the gateway for changes...")
         self._refresh_worker.request.emit()
 
-    def _on_refresh_done(self, pedidos):
+    def _on_refresh_done(self, ok, pedidos, error):
         try:
             self.isVisible()
         except RuntimeError:
             return
-        self._pedidos = pedidos or []
-        self._populate(self._pedidos)
+        self._refresh_in_flight = False
+        self.btn_refresh.setEnabled(True)
+        self.btn_refresh.setText("REFRESH NOW")
+        if ok:
+            self._pedidos = pedidos or []
+            self._populate(self._pedidos)
+            stamp = datetime.datetime.now().strftime("%H:%M:%S")
+            self.lbl_refresh_status.setText(f"Updated at {stamp} • automatic refresh is on")
+            self.lbl_live.setText("● LIVE")
+            self.lbl_live.setStyleSheet(f"color:{CLR_SUCCESS};font-size:12px;font-weight:700;")
+        else:
+            # A transient network failure must never erase the last known rows.
+            self.lbl_refresh_status.setText(error or "Could not update active orders.")
+            self.lbl_live.setText("● OFFLINE")
+            self.lbl_live.setStyleSheet(f"color:{CLR_ERROR};font-size:12px;font-weight:700;")
+        if self._refresh_pending:
+            self._refresh_pending = False
+            QTimer.singleShot(150, self.refresh)
 
     def populate_from_data(self, pedidos):
         self._pedidos = pedidos or []
@@ -2662,6 +2916,8 @@ class MesasDialog(QDialog):
 
     def _populate(self, pedidos):
         self.table.setRowCount(0)
+        count = len(pedidos)
+        self.lbl_count.setText(f"{count} ORDER" if count == 1 else f"{count} ORDERS")
         if not pedidos:
             self.table.insertRow(0)
             empty_item = QTableWidgetItem("No active tables at this time.")
@@ -2674,7 +2930,11 @@ class MesasDialog(QDialog):
             self.table.insertRow(row)
             mesa_val  = pedido.get("mesa") or "-"
             canal     = pedido.get("canal_origen") or "-"
-            estado    = pedido.get("estado") or "-"
+            estado_raw = (pedido.get("estado") or "-").upper()
+            estado = {
+                "PENDIENTE": "ACTIVE",
+                "POR_FACTURAR": "PAYMENT REQUESTED",
+            }.get(estado_raw, estado_raw.replace("_", " "))
             subtotal  = money(pedido.get('subtotal') or 0)
             total     = money(pedido.get('total_general') or 0)
             raw_fecha = pedido.get("fecha_creacion") or ""
@@ -2683,32 +2943,64 @@ class MesasDialog(QDialog):
             for col, val in enumerate([str(mesa_val), canal, estado, subtotal, total, fecha]):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
+                if col == 0:
+                    item.setData(Qt.UserRole, pedido.get("factura_local_uuid"))
                 self.table.setItem(row, col, item)
 
-            split_btn = QPushButton("SPLIT BILL")
+            action = QWidget()
+            action.setObjectName("ActiveOrderActions")
+            action.setMinimumSize(288, 54)
+            action_l = QHBoxLayout(action)
+            action_l.setContentsMargins(6, 7, 6, 7)
+            action_l.setSpacing(7)
+            pay_btn = QPushButton("PAY")
+            pay_btn.setObjectName("BtnPrimary")
+            pay_btn.setFixedSize(80, 40)
+            pay_btn.setEnabled(estado_raw == "POR_FACTURAR")
+            pay_btn.setToolTip("Process this customer's requested payment")
+            pay_btn.clicked.connect(lambda checked=False, p=pedido: self._pay_order(p))
+            split_btn = QPushButton("SPLIT")
             split_btn.setObjectName("BtnSplit")
             split_btn.setCursor(QCursor(Qt.PointingHandCursor))
-            split_btn.setMinimumWidth(104)
-            split_btn.clicked.connect(
-                lambda checked=False, r=row: self._open_split_for_row(r)
-            )
-            self.table.setCellWidget(row, 6, split_btn)
+            split_btn.setFixedSize(74, 40)
+            split_btn.setEnabled(estado_raw == "POR_FACTURAR")
+            split_btn.setToolTip("Split this bill into separate payments")
+            split_btn.clicked.connect(lambda checked=False, p=pedido: self._open_split_order(p))
+            reject_btn = QPushButton("REJECT")
+            reject_btn.setObjectName("BtnDanger")
+            reject_btn.setCursor(QCursor(Qt.PointingHandCursor))
+            reject_btn.setFixedSize(94, 40)
+            reject_btn.setToolTip("Reject this active order and notify the customer")
+            reject_btn.clicked.connect(lambda checked=False, p=pedido: self._reject_order(p))
+            action_l.addWidget(pay_btn)
+            action_l.addWidget(split_btn)
+            action_l.addWidget(reject_btn)
+            action_l.addStretch()
+            self.table.setCellWidget(row, 6, action)
 
-            if estado in ("POR_FACTURAR", "EN_ESPERA", "PENDIENTE"):
+            if estado_raw in ("POR_FACTURAR", "EN_ESPERA", "PENDIENTE"):
                 for col in range(6):
                     cell = self.table.item(row, col)
                     if cell:
-                        cell.setForeground(QBrush(QColor(CLR_EMBER)))
+                        cell.setForeground(QBrush(QColor(CLR_EMBER if estado_raw == "POR_FACTURAR" else CLR_TEXT)))
                         cell.setBackground(QBrush(QColor("rgba(255,107,0,0.08)")))
 
     def _on_double_click(self, index):
+        if index.column() == 6:
+            return
         row = index.row()
         if row < 0 or row >= len(self._pedidos):
             return
-        pedido = self._pedidos[row]
+        self._pay_order(self._pedidos[row])
+
+    def _pay_order(self, pedido):
         uuid = pedido.get("factura_local_uuid")
         if not uuid:
             AppMessageBox.warning(self, "Error", "Order has no UUID.")
+            return
+
+        if (pedido.get("estado") or "") == "PENDIENTE":
+            AppMessageBox.information(self, "Payment Pending", "This table is still active. The customer has not requested payment yet.")
             return
 
         carrito = self._load_remote_cart(pedido)
@@ -2725,9 +3017,14 @@ class MesasDialog(QDialog):
         if prop_legal <= 0.0:
             prop_legal = subtotal_val * 0.10
 
-        prop_extra = 0.0
+        try:
+            prop_extra = float(pedido.get('propina_extra') or 0.0)
+        except (ValueError, TypeError):
+            prop_extra = 0.0
 
-        total_val    = subtotal_val + itbis_val + prop_legal + prop_extra
+        total_val = float(pedido.get('total_general') or 0.0)
+        if total_val <= 0.0:
+            total_val = subtotal_val + itbis_val + prop_legal + prop_extra
         total_str    = money(total_val)
         subtotal_str = money(subtotal_val)
         itbis_str    = money(itbis_val)
@@ -2781,17 +3078,40 @@ class MesasDialog(QDialog):
                         fetch_pedidos=True, full_sync=True
                     )
             else:
-                AppMessageBox.critical(
-                    self, "CORE Notification Failed",
-                    f"Payment went through, but failed to notify CORE:\n{msg}"
+                AppMessageBox.warning(
+                    self, "Payment Not Completed",
+                    f"The order was not paid and remains open:\n{msg}"
                 )
+
+    def _reject_order(self, pedido):
+        uuid = pedido.get("factura_local_uuid")
+        if not uuid:
+            AppMessageBox.warning(self, "Error", "Order has no UUID.")
+            return
+        answer = AppMessageBox.question(
+            self,
+            "Reject order",
+            "Reject this active table order? The customer will immediately see that the payment was unsuccessful.",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        ok, msg = self.sincronizador.cancelar_pedido_remoto(uuid)
+        if ok:
+            AppMessageBox.information(self, "Order Rejected", "The order was rejected and the customer was notified.")
+            self.refresh()
+        else:
+            AppMessageBox.critical(self, "Reject Failed", msg)
 
     def _load_remote_cart(self, pedido):
         """Load and normalize item details for an Active Tables order."""
+        # Embedded gateway rows are still raw API DTOs; normalize them through
+        # POSService just like rows fetched from the detail endpoint.
         carrito = pedido.get("carrito") or []
         uuid = pedido.get("factura_local_uuid")
         if not carrito and uuid:
-            items = self.sincronizador.obtener_detalle_pedido(uuid)
+            items = pedido.get("items") or pedido.get("detalles") or []
+            if not items:
+                items = self.sincronizador.obtener_detalle_pedido(uuid)
             carrito, warnings = self.pos.cargar_pedido_remoto(pedido, items)
             # This flow is finalized explicitly by Active Tables, not by the
             # normal local-cart billing path.
@@ -2801,10 +3121,7 @@ class MesasDialog(QDialog):
                 AppMessageBox.warning(self, "Order Items", "\n".join(warnings))
         return carrito
 
-    def _open_split_for_row(self, row):
-        if row < 0 or row >= len(self._pedidos):
-            return
-        pedido = self._pedidos[row]
+    def _open_split_order(self, pedido):
         uuid = pedido.get("factura_local_uuid")
         if not uuid:
             AppMessageBox.warning(self, "Error", "Order has no UUID.")
@@ -2815,6 +3132,22 @@ class MesasDialog(QDialog):
             AppMessageBox.warning(self, "Empty Order", "The selected order has no importable items.")
             return
 
+        subtotal_val = float(pedido.get('subtotal') or 0.0)
+        itbis_val = float(pedido.get('total_impuestos') or 0.0)
+        try:
+            prop_legal = float(pedido.get('propina_legal') or 0.0)
+        except (ValueError, TypeError):
+            prop_legal = 0.0
+        if prop_legal <= 0.0:
+            prop_legal = subtotal_val * 0.10
+        try:
+            prop_extra = float(pedido.get('propina_extra') or 0.0)
+        except (ValueError, TypeError):
+            prop_extra = 0.0
+        total_val = float(pedido.get('total_general') or 0.0)
+        if total_val <= 0.0:
+            total_val = subtotal_val + itbis_val + prop_legal + prop_extra
+
         cliente = f"Table {pedido.get('mesa')}" if pedido.get('mesa') else "TABLE CUSTOMER"
         dialog = SplitBillDialog(
             carrito=carrito,
@@ -2824,27 +3157,30 @@ class MesasDialog(QDialog):
             ncf_num="B0200000001",
             notas=f"Active table split - {uuid}",
             cliente=cliente,
+            propina_extra=prop_extra,
+            breakdown_override={
+                "subtotal": subtotal_val,
+                "itbis": itbis_val,
+                "propina_legal": prop_legal,
+                "propina_extra": prop_extra,
+                "total": total_val,
+            },
             parent=self,
             remote_order=True,
+            remote_finalizer=lambda: self.sincronizador.notificar_facturacion_remota(uuid),
         )
         result = dialog.exec()
         dialog.deleteLater()
         if result != QDialog.Accepted:
             return
 
-        ok, msg = self.sincronizador.notificar_facturacion_remota(uuid)
-        if not ok:
-            AppMessageBox.critical(
-                self, "CORE Notification Failed",
-                f"All portions were collected, but CORE could not close the order:\n{msg}"
-            )
-            return
-
         try:
             paid_pedido = dict(pedido)
-            paid_pedido["total_general"] = dialog.total
-            paid_pedido["propina_legal"] = dialog.prop_legal
-            paid_pedido["propina_extra"] = 0.0
+            paid_pedido["subtotal"] = float(dialog.sub)
+            paid_pedido["total_impuestos"] = float(dialog.imp)
+            paid_pedido["total_general"] = float(dialog.total)
+            paid_pedido["propina_legal"] = float(dialog.prop_legal)
+            paid_pedido["propina_extra"] = float(dialog.prop_extra)
             self.pos.generar_ticket_desde_pedido(
                 pedido=paid_pedido,
                 carrito_raw=carrito,
@@ -4941,6 +5277,14 @@ class MainWindow(QMainWindow):
         cliente = self.txt_cliente.text().strip() or "SPLIT CUSTOMER"
         notas   = self.txt_notes.text().strip()
         hh_disc = self.happy_hour_discount if self.happy_hour_active else 0.0
+        combined_discount = hh_disc
+        for promo in self._applied_promotions:
+            if promo['tipo'] == 'MANUAL':
+                combined_discount = max(combined_discount, promo.get('_pct', 0.0))
+        try:
+            extra_tip = float(self.txt_extra_tip.text().strip() or "0")
+        except (ValueError, TypeError):
+            extra_tip = 0.0
 
         dlg = SplitBillDialog(
             carrito=list(self.carrito),
@@ -4950,7 +5294,8 @@ class MainWindow(QMainWindow):
             ncf_num=ncf_num,
             notas=notas,
             cliente=cliente,
-            happy_hour_discount=hh_disc,
+            happy_hour_discount=combined_discount,
+            propina_extra=extra_tip,
             parent=self,
         )
         result = dlg.exec()
@@ -4959,7 +5304,8 @@ class MainWindow(QMainWindow):
             self.ventas_turno += float(
                 self.pos.calcular_totales(
                     self.carrito,
-                    happy_hour_discount=hh_disc
+                    propina_extra=extra_tip,
+                    happy_hour_discount=combined_discount
                 )[3]
             )
             self.actualizar_visor_caja()
@@ -5153,6 +5499,9 @@ class MainWindow(QMainWindow):
         from services.auth_service import AuthService
         exito, mensaje = AuthService.login_maestro(self.u.text(), self.p.text())
         if exito:
+            # Keep an in-memory refresh path even when login used the local
+            # fallback or the token later expires during an active-table pay.
+            self.sincronizador.remember_credentials(self.u.text(), self.p.text())
             if AuthService.token:
                 self.sincronizador.token = AuthService.token
             else:

@@ -255,7 +255,10 @@ class POSService:
         finally:
             db.close()
 
-    def calcular_totales(self, carrito, propina_extra=0, global_discount_pct=0.0, happy_hour_active=False):
+    def calcular_totales(self, carrito, propina_extra=0, global_discount_pct=0.0, happy_hour_active=False,
+                         happy_hour_discount=None):
+        if happy_hour_discount is not None:
+            global_discount_pct = happy_hour_discount
         auto_promos = self.obtener_promociones_automaticas_activas()
         sub = Decimal("0")
         imp = Decimal("0")
@@ -328,7 +331,27 @@ class POSService:
 
                 prod = db.query(ProductoLocal).filter_by(id_producto=int(id_prod)).first()
                 if not prod:
-                    warnings.append(f"Product ID {id_prod} not found in local cache - skipped.")
+                    # Mobile orders carry an immutable price snapshot.  A stale
+                    # CAJA catalog must not turn a valid order into "Empty Order".
+                    subtotal_linea = item.get("subtotal_linea") or 0
+                    fallback_price = precio_override
+                    if fallback_price is None and cantidad:
+                        fallback_price = Decimal(str(subtotal_linea)) / cantidad
+                    fallback_price = Decimal(str(fallback_price or 0))
+                    fallback_tax = Decimal(str(item.get("impuesto_historico") or 0.18))
+                    if fallback_tax > 1:
+                        fallback_tax /= Decimal("100")
+                    carrito.append({
+                        'id': int(id_prod),
+                        'nombre': item.get("producto_nombre") or item.get("nombre") or f"Product {id_prod}",
+                        'precio': fallback_price,
+                        'cant': cantidad,
+                        'tasa': fallback_tax,
+                        'stock': 9999,
+                    })
+                    warnings.append(
+                        f"Product ID {id_prod} was loaded from the mobile order snapshot because the local catalog is outdated."
+                    )
                     continue
 
                 if prod.stock_local < cantidad and prod.stock_local != 9999:
@@ -356,10 +379,15 @@ class POSService:
         return carrito, warnings
 
     def procesar_venta(self, carrito, efectivo, metodo, ncf_tipo, ncf_num, notas, cliente,
-                       sincronizador=None, propina_extra=0):
+                       sincronizador=None, propina_extra=0, deduct_stock=True,
+                       happy_hour_discount=None):
         """Process a sale. If self.current_import_uuid is set, use it as the invoice ID
         and notify CORE when done."""
-        sub, imp, prop_legal, total = self.calcular_totales(carrito, propina_extra=propina_extra)
+        sub, imp, prop_legal, total = self.calcular_totales(
+            carrito,
+            propina_extra=propina_extra,
+            happy_hour_discount=happy_hour_discount,
+        )
         try:
             efec_val = efectivo.strip() if efectivo and str(efectivo).strip() else "0"
             efec = Decimal(str(efec_val)) if metodo == "EFECTIVO" else total
@@ -408,9 +436,10 @@ class POSService:
                     db.add(det)
 
                     # Deduct local stock — 9999 = unlimited stock marker, never decrement
-                    prod = db.query(ProductoLocal).filter_by(id_producto=i['id']).first()
-                    if prod and prod.stock_local is not None and prod.stock_local != 9999:
-                        prod.stock_local = max(0, prod.stock_local - i['cant'])
+                    if deduct_stock:
+                        prod = db.query(ProductoLocal).filter_by(id_producto=i['id']).first()
+                        if prod and prod.stock_local is not None and prod.stock_local != 9999:
+                            prod.stock_local = max(0, prod.stock_local - i['cant'])
 
                 # Construct payload for remote sync
                 detalles_payload = []

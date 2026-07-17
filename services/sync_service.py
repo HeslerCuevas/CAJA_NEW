@@ -9,6 +9,8 @@ class SyncService:
     def __init__(self, api_base_url="http://localhost:8001"):
         self.api_base_url = api_base_url
         self.token = None
+        self._last_identificador = None
+        self._last_password = None
         self._offline_until = 0.0
         self._offline_backoff_s = 15.0
 
@@ -31,13 +33,34 @@ class SyncService:
     def _mark_remote_success(self):
         self._offline_until = 0.0
 
+    def remember_credentials(self, identificador, password):
+        """Keep the current cashier credentials in memory for token refresh."""
+        self._last_identificador = (identificador or "").strip()
+        self._last_password = password or ""
+
+    def _ensure_gateway_token(self):
+        if self.token:
+            return True
+        if not self._last_identificador or not self._last_password:
+            return False
+        ok, _ = self.autenticar(self._last_identificador, self._last_password)
+        return bool(ok and self.token)
+
+    def _refresh_gateway_token(self):
+        self.token = None
+        return self._ensure_gateway_token()
+
     def _request(self, method, url, *, timeout=(0.75, 1.5), offline_sensitive=True, **kwargs):
         if offline_sensitive and not self._remote_available():
             return None
         try:
             response = requests.request(method, url, timeout=timeout, **kwargs)
             if response.status_code >= 500:
-                self._mark_remote_failure()
+                # Background synchronization can back off after a remote
+                # failure, but a cashier completing or rejecting a payment
+                # must always be allowed to contact the Gateway directly.
+                if offline_sensitive:
+                    self._mark_remote_failure()
             else:
                 self._mark_remote_success()
             return response
@@ -46,13 +69,66 @@ class SyncService:
                 self._mark_remote_failure()
             raise
 
+    def _post_critical_order_action(self, url, headers, payload):
+        """POST a payment decision without being blocked by sync backoff.
+
+        Billing and rejection are idempotent in the Gateway, so one retry for
+        transient network/Gateway failures is safe and avoids losing a live
+        cashier action after an unrelated synchronization failure.
+        """
+        response = None
+        last_error = None
+        token_refreshed = False
+        for attempt in range(1, 3):
+            try:
+                response = self._request(
+                    "post",
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=(2.0, 15.0),
+                    offline_sensitive=False,
+                )
+            except requests.exceptions.RequestException as exc:
+                last_error = str(exc)
+                if attempt == 1:
+                    continue
+                return None, f"Could not reach the Gateway after two attempts: {last_error}"
+
+            if response is None:
+                last_error = "No response from the Gateway."
+                if attempt == 1:
+                    continue
+                return None, f"Could not reach the Gateway after two attempts: {last_error}"
+
+            if response.status_code == 401 and not token_refreshed:
+                if self._refresh_gateway_token():
+                    headers["Authorization"] = f"Bearer {self.token}"
+                    token_refreshed = True
+                    continue
+                return response, None
+
+            # A request may have reached the Gateway before a 5xx response;
+            # retrying remains safe because the endpoints are idempotent.
+            if response.status_code in (502, 503, 504) and attempt == 1:
+                last_error = f"Gateway returned HTTP {response.status_code}."
+                continue
+            return response, None
+
+        return response, last_error
+
     def autenticar(self, identificador, password):
+        self.remember_credentials(identificador, password)
         url = f"{self.api_base_url}/api/v1/auth/login"
         payload = {"username": identificador.strip(), "password": password.strip()}
-        if not self._remote_available():
-            return False, "Connection error: gateway temporarily unavailable."
         try:
-            response = self._request("post", url, data=payload, timeout=(0.75, 1.25))
+            response = self._request(
+                "post",
+                url,
+                data=payload,
+                timeout=(2.0, 10.0),
+                offline_sensitive=False,
+            )
             if response is None:
                 return False, "Connection error: gateway temporarily unavailable."
             if response.status_code == 200:
@@ -437,9 +513,12 @@ class SyncService:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
             print(f"📡 [MESAS] GET {url}", flush=True)
-            response = self._request("get", url, headers=headers, timeout=(0.75, 1.5))
+            response = self._request(
+                "get", url, headers=headers, timeout=(1.5, 4.0),
+                offline_sensitive=False,
+            )
             if response is None:
-                return []
+                return False, [], "Gateway is temporarily unavailable."
             print(f"📡 [MESAS] HTTP {response.status_code}", flush=True)
 
             if response.status_code == 200:
@@ -457,28 +536,35 @@ class SyncService:
                     print(f"📡 [MESAS] Sample order keys: {list(data[0].keys())}", flush=True)
                     print(f"📡 [MESAS] Sample order estados: {[p.get('estado') or p.get('Estado') for p in data[:5]]}", flush=True)
 
-                filtered_data = [p for p in data if (p.get("estado") or p.get("Estado")) == "POR_FACTURAR"]
+                # Keep both newly-created active orders and orders for which the
+                # customer has explicitly requested the bill.  The old filter
+                # dropped PENDIENTE orders, making the table appear randomly
+                # empty until the customer requested payment again.
+                filtered_data = [
+                    p for p in data
+                    if (p.get("estado") or p.get("Estado")) in ("PENDIENTE", "POR_FACTURAR")
+                ]
 
-                print(f"✅ [MESAS] {len(filtered_data)} POR_FACTURAR orders returned to UI.", flush=True)
+                print(f"✅ [MESAS] {len(filtered_data)} active orders returned to UI.", flush=True)
                 SyncService._log(
                     "INFO", "SyncService.obtener_cuentas_abiertas",
-                    f"Fetched {len(data)} orders from gateway, {len(filtered_data)} are POR_FACTURAR."
+                    f"Fetched {len(data)} orders from gateway, {len(filtered_data)} are active."
                 )
-                return filtered_data
+                return True, filtered_data, ""
 
             if response.status_code == 401:
                 print("⚠️ [MESAS] 401 Unauthorized — token expired or not set.", flush=True)
                 SyncService._log("WARNING", "SyncService.obtener_cuentas_abiertas", "401 Unauthorized fetching open orders.")
-                return []
+                return False, [], "Your CAJA session expired. Sign in again."
 
             print(f"⚠️ [MESAS] Unexpected HTTP {response.status_code}: {response.text[:300]}", flush=True)
             SyncService._log("WARNING", "SyncService.obtener_cuentas_abiertas",
                              f"HTTP {response.status_code}: {response.text[:200]}")
-            return []
+            return False, [], f"Gateway returned HTTP {response.status_code}."
         except Exception as e:
             print(f"❌ [MESAS] Connection error: {e}", flush=True)
             SyncService._log("ERROR", "SyncService.obtener_cuentas_abiertas", "Connection error fetching open orders", e)
-            return []
+            return False, [], f"Could not reach the gateway: {e}"
 
     def obtener_detalle_pedido(self, factura_uuid):
         url = f"{self.api_base_url}/api/v1/pedidos/{factura_uuid}"
@@ -487,7 +573,10 @@ class SyncService:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
             print(f"📡 Fetching order detail: {url}", flush=True)
-            response = self._request("get", url, headers=headers, timeout=(0.75, 1.5))
+            response = self._request(
+                "get", url, headers=headers, timeout=(1.5, 4.0),
+                offline_sensitive=False,
+            )
             if response is None:
                 return []
             print(f"📡 Order detail response: HTTP {response.status_code}", flush=True)
@@ -515,17 +604,23 @@ class SyncService:
 
     def notificar_facturacion_remota(self, factura_uuid):
 
+        if not self._ensure_gateway_token():
+            return False, "Caja has no active Gateway session. Sign in again before paying this order."
+
         url = f"{self.api_base_url}/api/v1/pedidos/{factura_uuid}/facturar"
         headers = {"Accept": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
+        print(f"[Payment] Gateway authorization present: {'Authorization' in headers}", flush=True)
         try:
-            print(f"📡 Sending payment confirmation to CORE: POST {url}", flush=True)
+            print(f"[Payment] Sending payment confirmation to Gateway: POST {url}", flush=True)
 
-            response = self._request("post", url, headers=headers, json={}, timeout=(0.75, 2.0))
+            response, request_error = self._post_critical_order_action(
+                url, headers, {}
+            )
             if response is None:
-                return False, "Gateway temporarily unavailable."
-            print(f"📡 Payment confirmation response: HTTP {response.status_code}", flush=True)
+                return False, request_error or "Gateway temporarily unavailable."
+            print(f"[Payment] Confirmation response: HTTP {response.status_code}", flush=True)
             
             if response.status_code in (200, 201):
                 SyncService._log("INFO", "SyncService.notificar_facturacion_remota",
@@ -533,15 +628,39 @@ class SyncService:
                 return True, "Remote order closed successfully."
             
             error_text = response.text[:200] if response.text else "No response body"
-            print(f"⚠️ Payment confirmation failed: {error_text}", flush=True)
+            print(f"[Payment] Confirmation failed: {error_text}", flush=True)
             SyncService._log("WARNING", "SyncService.notificar_facturacion_remota",
                              f"CORE notification failed for {factura_uuid}: HTTP {response.status_code}")
             return False, f"CORE returned HTTP {response.status_code}: {error_text}"
         except Exception as e:
-            print(f"❌ Payment confirmation connection error: {e}", flush=True)
+            print(f"[Payment] Confirmation connection error: {e}", flush=True)
             SyncService._log("ERROR", "SyncService.notificar_facturacion_remota",
                              f"Connection error notifying CORE for {factura_uuid}", e)
             return False, f"Connection error: {str(e)}"
+
+    def cancelar_pedido_remoto(self, factura_uuid, motivo="Rechazado desde CAJA"):
+        """Reject an active mobile order and propagate it through the gateway."""
+        if not self._ensure_gateway_token():
+            return False, "Caja has no active Gateway session. Sign in again before rejecting this order."
+
+        url = f"{self.api_base_url}/api/v1/pedidos/{factura_uuid}/cancelar"
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        print(f"[Rejection] Gateway authorization present: {'Authorization' in headers}", flush=True)
+        try:
+            response, request_error = self._post_critical_order_action(
+                url, headers, {"motivo": motivo}
+            )
+            if response is None:
+                return False, request_error or "Gateway temporarily unavailable."
+            if response.status_code in (200, 201):
+                return True, "Order rejected and customer notified."
+            detail = response.text[:240] if response.text else "No response body"
+            return False, f"CORE returned HTTP {response.status_code}: {detail}"
+        except Exception as e:
+            SyncService._log("ERROR", "SyncService.cancelar_pedido_remoto", str(e), e)
+            return False, f"Connection error: {e}"
 
     def get_modificadores_producto(self, producto_id):
         '''Fetch available modifiers for a product from the CORE API.
